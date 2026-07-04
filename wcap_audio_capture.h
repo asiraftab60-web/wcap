@@ -41,6 +41,9 @@ AudioCaptureData;
 static bool AudioCapture_CanCaptureApplicationLocal(void);
 
 // make sure CoInitializeEx has been called before calling Start()
+// ApplicationWindow == NULL  -> WASAPI loopback of default render device (system audio)
+// ApplicationWindow != NULL  -> process-local loopback for that window's process
+// ApplicationWindow == (HWND)-1 -> microphone (default capture/input device)
 static bool AudioCapture_Start(AudioCapture* Capture, HWND ApplicationWindow);
 static void AudioCapture_Stop(AudioCapture* Capture);
 static void AudioCapture_Flush(AudioCapture* Capture);
@@ -281,10 +284,46 @@ bool AudioCapture_Start(AudioCapture* Capture, HWND ApplicationWindow)
 			IActivateAudioInterfaceAsyncOperation_Release(AsyncOperation);
 		}
 	}
-	else
+	else if (ApplicationWindow == (HWND)-1)
 	{
+		// Microphone capture: use default audio input (capture) device
 		IMMDeviceEnumerator* Enumerator;
 		HR(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&Enumerator));
+
+		IMMDevice* Device;
+		if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Enumerator, eCapture, eConsole, &Device)))
+		{
+			IMMDeviceEnumerator_Release(Enumerator);
+			return false;
+		}
+
+		IAudioClient* Client;
+		HR(IMMDevice_Activate(Device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&Client));
+
+		WAVEFORMATEX* Format;
+		HR(IAudioClient_GetMixFormat(Client, &Format));
+
+		REFERENCE_TIME DefaultPeriod, MinimumPeriod;
+		HR(IAudioClient_GetDevicePeriod(Client, &DefaultPeriod, &MinimumPeriod));
+
+		DWORD Flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+		HR(IAudioClient_Initialize(Client, AUDCLNT_SHAREMODE_SHARED, Flags, DefaultPeriod, 0, Format, NULL));
+		HR(IAudioClient_GetService(Client, &IID_IAudioCaptureClient, (void**)&Capture->CaptureClient));
+
+		Capture->PlayClient = NULL;
+		Capture->RecordClient = Client;
+		Capture->Format = Format;
+
+		Capture->StartPos = 0;
+		Capture->UseDeviceTimestamp = false;
+		Capture->CheckDeviceTimestamp = false;
+
+		IMMDevice_Release(Device);
+		IMMDeviceEnumerator_Release(Enumerator);
+
+		Result = true;
+	}
+	else
 
 		IMMDevice* Device;
 		if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Enumerator, eRender, eConsole, &Device)))
@@ -497,3 +536,4 @@ void AudioCapture_ReleaseData(AudioCapture* Capture, AudioCaptureData* Data)
 	Assert(ReadSize <= atomic_load_explicit(&Capture->BufferWrite, memory_order_relaxed) - atomic_load_explicit(&Capture->BufferRead, memory_order_relaxed));
 	atomic_fetch_add_explicit(&Capture->BufferRead, ReadSize, memory_order_release);
 }
+
