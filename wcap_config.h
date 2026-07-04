@@ -48,6 +48,7 @@ typedef struct
 	// audio
 	BOOL CaptureAudio;
 	BOOL ApplicationLocalAudio;
+	BOOL CaptureMicrophone;
 	DWORD AudioCodec;
 	DWORD AudioChannels;
 	DWORD AudioSamplerate;
@@ -111,6 +112,7 @@ static BOOL Config_ShowDialog(Config* C);
 
 #define ID_AUDIO_CAPTURE           300
 #define ID_AUDIO_APPLICATION_LOCAL 310
+#define ID_AUDIO_MICROPHONE        312
 #define ID_AUDIO_CODEC             320
 #define ID_AUDIO_CHANNELS          330
 #define ID_AUDIO_SAMPLERATE        340
@@ -142,7 +144,7 @@ static BOOL Config_ShowDialog(Config* C);
 #define COL10W 144
 #define COL11W 130
 #define ROW0H 98
-#define ROW1H 124
+#define ROW1H 138
 #define ROW2H 56
 
 #define PADDING 4             // padding for dialog and group boxes
@@ -353,6 +355,7 @@ static void Config__SetDialogValues(HWND Window, Config* C)
 	// audio
 	CheckDlgButton(Window, ID_AUDIO_CAPTURE, C->CaptureAudio);
 	CheckDlgButton(Window, ID_AUDIO_APPLICATION_LOCAL, C->ApplicationLocalAudio);
+	CheckDlgButton(Window, ID_AUDIO_MICROPHONE, C->CaptureMicrophone);
 	SendDlgItemMessageW(Window, ID_AUDIO_CODEC, CB_SETCURSEL, C->AudioCodec, 0);
 	SendDlgItemMessageW(Window, ID_AUDIO_CHANNELS, CB_SETCURSEL, C->AudioChannels - 1, 0);
 	WCHAR Text[64];
@@ -519,6 +522,7 @@ static LRESULT CALLBACK Config__DialogProc(HWND Window, UINT Message, WPARAM WPa
 			// audio
 			C->CaptureAudio          = IsDlgButtonChecked(Window, ID_AUDIO_CAPTURE);
 			C->ApplicationLocalAudio = IsDlgButtonChecked(Window, ID_AUDIO_APPLICATION_LOCAL);
+			C->CaptureMicrophone     = IsDlgButtonChecked(Window, ID_AUDIO_MICROPHONE);
 			C->AudioCodec            = (DWORD)SendDlgItemMessageW(Window, ID_AUDIO_CODEC,    CB_GETCURSEL, 0, 0);
 			C->AudioChannels         = (DWORD)SendDlgItemMessageW(Window, ID_AUDIO_CHANNELS, CB_GETCURSEL, 0, 0) + 1;
 			C->AudioSamplerate       = gAudioSamplerates[SendDlgItemMessageW(Window, ID_AUDIO_SAMPLERATE, CB_GETCURSEL, 0, 0)];
@@ -875,6 +879,7 @@ void Config_Defaults(Config* C)
 		// audio
 		.CaptureAudio = TRUE,
 		.ApplicationLocalAudio = TRUE,
+		.CaptureMicrophone = FALSE,
 		.AudioCodec = CONFIG_AUDIO_AAC,
 		.AudioChannels = 2,
 		.AudioSamplerate = 48000,
@@ -986,6 +991,7 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	// audio
 	Config__GetBool(FileName, L"CaptureAudio",          &C->CaptureAudio);
 	Config__GetBool(FileName, L"ApplicationLocalAudio", &C->ApplicationLocalAudio);
+	Config__GetBool(FileName, L"CaptureMicrophone",     &C->CaptureMicrophone);
 	Config__GetStr(FileName, L"AudioCodec",             &C->AudioCodec,      gAudioCodecs);
 	Config__GetInt(FileName, L"AudioChannels",          &C->AudioChannels,   (DWORD[]) { 1, 2, 0 });
 	Config__GetInt(FileName, L"AudioSamplerate",        &C->AudioSamplerate, gAudioSamplerates);
@@ -1035,6 +1041,7 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	// audio
 	WritePrivateProfileStringW(INI_SECTION, L"CaptureAudio",          C->CaptureAudio          ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"ApplicationLocalAudio", C->ApplicationLocalAudio ? L"1" : L"0", FileName);
+	WritePrivateProfileStringW(INI_SECTION, L"CaptureMicrophone",     C->CaptureMicrophone     ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"AudioCodec", gAudioCodecs[C->AudioCodec], FileName);
 	Config__WriteInt(FileName, L"AudioChannels",   C->AudioChannels);
 	Config__WriteInt(FileName, L"AudioSamplerate", C->AudioSamplerate);
@@ -1110,6 +1117,7 @@ BOOL Config_ShowDialog(Config* C)
 				{
 					{ "Capture Au&dio",           ID_AUDIO_CAPTURE,           ITEM_CHECKBOX     },
 					{ "Applicatio&n Local Audio", ID_AUDIO_APPLICATION_LOCAL, ITEM_CHECKBOX     },
+					{ "Capture &Microphone",      ID_AUDIO_MICROPHONE,        ITEM_CHECKBOX     },
 					{ "Codec",                    ID_AUDIO_CODEC,             ITEM_COMBOBOX, 60 },
 					{ "Channels",                 ID_AUDIO_CHANNELS,          ITEM_COMBOBOX, 60 },
 					{ "Samplerate",               ID_AUDIO_SAMPLERATE,        ITEM_COMBOBOX, 60 },
