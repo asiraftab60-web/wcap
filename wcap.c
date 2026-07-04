@@ -1567,4 +1567,3 @@ void WinMainCRTStartup()
 		DispatchMessageW(&Message);
 	}
 }
- 
