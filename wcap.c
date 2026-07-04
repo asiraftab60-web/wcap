@@ -378,32 +378,32 @@ static void EncodeCapturedAudio(void)
 		{
 			Assert(Data.Time >= gEncoder.StartTime);
 
-			// Mix in microphone audio if available and formats match (both float32)
-			if (gConfig.CaptureMicrophone && gMic.CaptureClient && Data.Samples &&
-				gMic.Format->wBitsPerSample == 32 && gAudio.Format->wBitsPerSample == 32)
+			// Mix in microphone audio if available
+			if (gConfig.CaptureMicrophone && gMic.CaptureClient && Data.Samples)
 			{
 				UINT32 SysChannels = gAudio.Format->nChannels;
 				UINT32 MicChannels = gMic.Format->nChannels;
-				UINT32 SampleCount = FramesToEncode * SysChannels;
-				float* Dst = (float*)Data.Samples;
 
-				// We collect mic samples into a temp scratch area and add
 				AudioCaptureData MicData;
 				if (AudioCapture_GetData(&gMic, &MicData, gEncoder.StartTime))
 				{
 					UINT32 MicFrames = (UINT32)MicData.Count;
 					if (MicFrames > FramesToEncode) MicFrames = FramesToEncode;
 
-					if (MicData.Samples)
+					if (MicData.Samples && gMic.Format->wBitsPerSample == 32 && gAudio.Format->wBitsPerSample == 32)
 					{
+						float* Dst = (float*)Data.Samples;
 						float* Src = (float*)MicData.Samples;
 						for (UINT32 f = 0; f < MicFrames; f++)
 						{
 							for (UINT32 c = 0; c < SysChannels; c++)
 							{
-								// map mic channel (mono mic -> both channels, stereo mic -> direct)
 								UINT32 MicCh = (MicChannels == 1) ? 0 : (c < MicChannels ? c : MicChannels - 1);
-								Dst[f * SysChannels + c] += Src[f * MicChannels + MicCh];
+								float Mixed = Dst[f * SysChannels + c] + Src[f * MicChannels + MicCh];
+								// clamp to [-1, 1]
+								if (Mixed > 1.0f) Mixed = 1.0f;
+								if (Mixed < -1.0f) Mixed = -1.0f;
+								Dst[f * SysChannels + c] = Mixed;
 							}
 						}
 					}
