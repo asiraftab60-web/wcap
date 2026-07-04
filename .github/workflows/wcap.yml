@@ -24,26 +24,8 @@ jobs:
         shell: cmd
         run: cd repo && build.cmd x64
 
-      - name: Build (arm64)
-        shell: cmd
-        run: cd repo && build.cmd arm64
-
-      - name: Checkout wiki
-        uses: actions/checkout@v4
-        if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          repository: ${{github.repository}}.wiki
-          path: wiki
-
-      - name: Upload binaries
-        if: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
-        shell: cmd
-        run: |
-          copy repo\wcap-x64.exe   wiki
-          copy repo\wcap-arm64.exe wiki
-
-          cd wiki
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git commit --all --amend --no-edit
-          git push --force-with-lease
+          name: wcap-x64
+          path: repo\wcap-x64.exe
