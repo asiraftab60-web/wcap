@@ -1,1569 +1,541 @@
+#pragma once
+
 #include "wcap.h"
-#include "wcap_config.h"
-#include "wcap_audio_capture.h"
-#include "wcap_screen_capture.h"
-#include "wcap_encoder.h"
+#include <audioclient.h>
 
-#include <dxgi1_6.h>
-#include <d3d11.h>
-#include <dwmapi.h>
-#include <shlobj.h>
-#include <shlwapi.h>
-#include <shellapi.h>
-#include <windowsx.h>
+//
+// interface
+//
 
-#pragma comment (lib, "ntdll")
-#pragma comment (lib, "kernel32")
-#pragma comment (lib, "user32")
-#pragma comment (lib, "gdi32")
-#pragma comment (lib, "msimg32")
-#pragma comment (lib, "dxgi")
-#pragma comment (lib, "d3dcompiler")
-#pragma comment (lib, "d3d11")
-#pragma comment (lib, "dwmapi")
-#pragma comment (lib, "shell32")
-#pragma comment (lib, "shlwapi")
-#pragma comment (lib, "mfplat")
-#pragma comment (lib, "mfuuid")
-#pragma comment (lib, "mfreadwrite")
-#pragma comment (lib, "evr")
-#pragma comment (lib, "strmiids")
-#pragma comment (lib, "ksuser")
-#pragma comment (lib, "mmdevapi")
-#pragma comment (lib, "ole32")
-#pragma comment (lib, "wmcodecdspuuid")
-#pragma comment (lib, "avrt")
-#pragma comment (lib, "uxtheme")
-#pragma comment (lib, "OneCore")
-#pragma comment (lib, "CoreMessaging")
-
-#if defined(_M_AMD64)
-// this is needed to be able to use Nvidia Media Foundation encoders on Optimus systems
-__declspec(dllexport) DWORD NvOptimusEnablement = 1;
-#endif
-
-#define WM_WCAP_ALREADY_RUNNING (WM_USER+1)
-#define WM_WCAP_STOP_CAPTURE    (WM_USER+2)
-#define WM_WCAP_TRAY_TITLE      (WM_USER+3)
-#define WM_WCAP_COMMAND         (WM_USER+4)
-
-#define WCAP_AUDIO_CAPTURE_TIMER    1
-#define WCAP_AUDIO_CAPTURE_INTERVAL 100 // msec
-
-#define WCAP_VIDEO_UPDATE_TIMER     2
-#define WCAP_VIDEO_UPDATE_INTERVAL  100 // msec
-
-#define CMD_WCAP     1
-#define CMD_QUIT     2
-#define CMD_SETTINGS 3
-
-#define HOT_RECORD_WINDOW  1
-#define HOT_RECORD_MONITOR 2
-#define HOT_RECORD_REGION  3
-
-#define WCAP_RESIZE_NONE 0
-#define WCAP_RESIZE_TL   1
-#define WCAP_RESIZE_T    2
-#define WCAP_RESIZE_TR   3
-#define WCAP_RESIZE_L    4
-#define WCAP_RESIZE_M    5
-#define WCAP_RESIZE_R    6
-#define WCAP_RESIZE_BL   7
-#define WCAP_RESIZE_B    8
-#define WCAP_RESIZE_BR   9
-
-#define WCAP_UI_FONT      L"Segoe UI"
-#define WCAP_UI_FONT_SIZE 16
-
-#define WCAP_RECT_BORDER 2
-
-// constants
-static WCHAR gConfigPath[MAX_PATH];
-static LARGE_INTEGER gTickFreq;
-static HICON gIcon1;
-static HICON gIcon2;
-static UINT WM_TASKBARCREATED;
-static HCURSOR gCursorArrow;
-static HCURSOR gCursorClick;
-static HCURSOR gCursorResize[10];
-static HFONT gFont;
-static HFONT gFontBold;
-
-// recording state
-static BOOL gRecordingStarted;
-static BOOL gRecording;
-static DWORD gRecordingLimitFramerate;
-static DWORD gRecordingDroppedFrames;
-static UINT64 gRecordingLastFrame;
-static UINT64 gRecordingNextEncode;
-static UINT64 gRecordingNextTooltip;
-static EXECUTION_STATE gRecordingState;
-static WCHAR gRecordingPath[MAX_PATH];
-
-// when selecting rectangle to record
-static HMONITOR gRectMonitor;
-static HDC gRectContext;
-static HDC gRectDarkContext;
-static HBITMAP gRectBitmap;
-static HBITMAP gRectDarkBitmap;
-static DWORD gRectWidth;
-static DWORD gRectHeight;
-static BOOL gRectSelected;
-static POINT gRectSelection[2];
-static POINT gRectMousePos;
-static int gRectResize;
-static int gRectSetSize[2];
-static BOOL gRectSetSizeClick;
-
-// globals
-static HWND gWindow;
-static Config gConfig;
-static AudioCapture gAudio;
-static AudioCapture gMic;
-static ScreenCapture gCapture;
-static Encoder gEncoder;
-
-static void ShowNotification(LPCWSTR Message, LPCWSTR Title, DWORD Flags)
+typedef struct
 {
-	NOTIFYICONDATAW Data =
-	{
-		.cbSize = sizeof(Data),
-		.hWnd = gWindow,
-		.uFlags = NIF_INFO | NIF_TIP,
-		.dwInfoFlags = Flags, // NIIF_INFO, NIIF_WARNING, NIIF_ERROR
-	};
-	StrCpyNW(Data.szTip, WCAP_TITLE, _countof(Data.szTip));
-	StrCpyNW(Data.szInfo, Message, _countof(Data.szInfo));
-	StrCpyNW(Data.szInfoTitle, Title ? Title : WCAP_TITLE, _countof(Data.szInfoTitle));
-	Shell_NotifyIconW(NIM_MODIFY, &Data);
+	IAudioClient* PlayClient;
+	IAudioClient* RecordClient;
+	IAudioCaptureClient* CaptureClient;
+	WAVEFORMATEX* Format;
+	uint64_t StartQpc;
+	uint64_t StartPos;
+	uint64_t Freq;
+	bool UseDeviceTimestamp;
+	bool CheckDeviceTimestamp;
+
+	bool Stop;
+	HANDLE Event;
+	HANDLE Thread;
+
+	uint8_t* Buffer;
+	uint32_t BufferSize;
+	_Atomic(uint32_t) BufferRead;
+	_Atomic(uint32_t) BufferWrite;
+}
+AudioCapture;
+
+typedef struct
+{
+	void* Samples;
+	size_t Count;
+	uint64_t Time; // compatible with QPC
+}
+AudioCaptureData;
+
+static bool AudioCapture_CanCaptureApplicationLocal(void);
+
+// make sure CoInitializeEx has been called before calling Start()
+// ApplicationWindow == NULL  -> WASAPI loopback of default render device (system audio)
+// ApplicationWindow != NULL  -> process-local loopback for that window's process
+// ApplicationWindow == (HWND)-1 -> microphone (default capture/input device)
+static bool AudioCapture_Start(AudioCapture* Capture, HWND ApplicationWindow);
+static void AudioCapture_Stop(AudioCapture* Capture);
+static void AudioCapture_Flush(AudioCapture* Capture);
+
+// expectedTimestamp is used only first time GetData() is called to detect abnormal device timestamps
+static bool AudioCapture_GetData(AudioCapture* Capture, AudioCaptureData* Data, uint64_t ExpectedTimestamp);
+static void AudioCapture_ReleaseData(AudioCapture* Capture, AudioCaptureData* Data);
+
+//
+// implementation
+//
+
+#include <mmdeviceapi.h>
+#include <audioclientactivationparams.h>
+#include <mfapi.h>
+#include <avrt.h>
+
+// from ntdll.dll
+extern __declspec(dllimport) LONG WINAPI RtlGetVersion(RTL_OSVERSIONINFOW*);
+
+bool AudioCapture_CanCaptureApplicationLocal(void)
+{
+	RTL_OSVERSIONINFOW Version = { sizeof(Version) };
+	RtlGetVersion(&Version);
+
+	// not exactly sure which version
+	// available since Windows 10 version 2004, May 2020 Update (20H1), build 10.0.19041.0
+	return Version.dwMajorVersion > 10 || (Version.dwMajorVersion == 10 && Version.dwBuildNumber >= 19041);
 }
 
-static void UpdateTrayTitle(LPCWSTR Title)
-{
-	NOTIFYICONDATAW Data =
-	{
-		.cbSize = sizeof(Data),
-		.hWnd = gWindow,
-		.uFlags = NIF_TIP,
-	};
-	StrCpyNW(Data.szTip, Title, _countof(Data.szTip));
-	Shell_NotifyIconW(NIM_MODIFY, &Data);
-}
+DEFINE_GUID(CLSID_MMDeviceEnumerator,                     0xbcde0395, 0xe52f, 0x467c, 0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e);
+DEFINE_GUID(IID_IMMDeviceEnumerator,                      0xa95664d2, 0x9614, 0x4f35, 0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6);
+DEFINE_GUID(IID_IAudioClient,                             0x1cb9ad4c, 0xdbfa, 0x4c32, 0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2);
+DEFINE_GUID(IID_IAudioCaptureClient,                      0xc8adbd64, 0xe71e, 0x48a0, 0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17);
+DEFINE_GUID(IID_IAudioRenderClient,                       0xf294acfc, 0x3146, 0x4483, 0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2);
+DEFINE_GUID(IID_IActivateAudioInterfaceCompletionHandler, 0x41d949ab, 0x9862, 0x444a, 0x80, 0xf6, 0xc2, 0x61, 0x33, 0x4d, 0xa5, 0xeb);
 
-static void UpdateTrayIcon(HICON Icon)
+typedef struct
 {
-	NOTIFYICONDATAW Data =
-	{
-		.cbSize = sizeof(Data),
-		.hWnd = gWindow,
-		.uFlags = NIF_ICON,
-		.hIcon = Icon,
-	};
-	Shell_NotifyIconW(NIM_MODIFY, &Data);
+	IActivateAudioInterfaceCompletionHandler Handler;
+	_Atomic(uint32_t) ReadyFlag;
 }
+AudioCaptureActivate;
 
-static void AddTrayIcon(HWND Window)
+static HRESULT STDMETHODCALLTYPE AudioCaptureActivate__QueryInterface(IActivateAudioInterfaceCompletionHandler* This, REFIID Riid, void** Object)
 {
-	NOTIFYICONDATAW Data =
+	if (Object == NULL)
 	{
-		.cbSize = sizeof(Data),
-		.hWnd = Window,
-		.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP,
-		.uCallbackMessage = WM_WCAP_COMMAND,
-		.hIcon = gIcon1,
-	};
-	StrCpyNW(Data.szTip, WCAP_TITLE, _countof(Data.szTip));
-	Shell_NotifyIconW(NIM_ADD, &Data);
-}
-
-static void RemoveTrayIcon(HWND Window)
-{
-	NOTIFYICONDATAW Data =
-	{
-		.cbSize = sizeof(Data),
-		.hWnd = Window,
-	};
-	Shell_NotifyIconW(NIM_DELETE, &Data);
-}
-
-static void ShowFileInFolder(LPCWSTR Filename)
-{
-	SFGAOF Flags;
-	PIDLIST_ABSOLUTE List;
-	if (Filename[0] && SUCCEEDED(SHParseDisplayName(Filename, NULL, &List, 0, &Flags)))
-	{
-		HR(SHOpenFolderAndSelectItems(List, 0, NULL, 0));
-		CoTaskMemFree(List);
+		return E_POINTER;
 	}
+	if (IsEqualGUID(Riid, &IID_IActivateAudioInterfaceCompletionHandler) ||
+		IsEqualGUID(Riid, &IID_IAgileObject) ||
+		IsEqualGUID(Riid, &IID_IUnknown))
+	{
+		*Object = This;
+		return S_OK;
+	}
+	return E_NOINTERFACE;
 }
 
-static void StartRecording(ID3D11Device* Device, HWND Window)
+static ULONG STDMETHODCALLTYPE AudioCaptureActivate__AddRef(IActivateAudioInterfaceCompletionHandler* This)
 {
-	SYSTEMTIME Time;
-	GetLocalTime(&Time);
+	return 1;
+}
 
-	int Error = SHCreateDirectoryExW(NULL, gConfig.OutputFolder, NULL);
-	if (Error != ERROR_SUCCESS && Error != ERROR_FILE_EXISTS && Error != ERROR_ALREADY_EXISTS)
+static ULONG STDMETHODCALLTYPE AudioCaptureActivate__Release(IActivateAudioInterfaceCompletionHandler* This)
+{
+	return 1;
+}
+
+static HRESULT STDMETHODCALLTYPE AudioCaptureActivate__ActivateCompleted(IActivateAudioInterfaceCompletionHandler* This, IActivateAudioInterfaceAsyncOperation* ActivateOperation)
+{
+	AudioCaptureActivate* Activate = CONTAINING_RECORD(This, AudioCaptureActivate, Handler);
+
+	atomic_store_explicit(&Activate->ReadyFlag, 1, memory_order_release);
+	WakeByAddressSingle((PVOID)&Activate->ReadyFlag);
+
+	return S_OK;
+}
+
+static IActivateAudioInterfaceCompletionHandlerVtbl AudioCaptureActivateVtbl =
+{
+	.QueryInterface    = &AudioCaptureActivate__QueryInterface,
+	.AddRef            = &AudioCaptureActivate__AddRef,
+	.Release           = &AudioCaptureActivate__Release,
+	.ActivateCompleted = &AudioCaptureActivate__ActivateCompleted,
+};
+
+static DWORD CALLBACK AudioCapture__Thread(LPVOID Arg)
+{
+	AudioCapture* Capture = Arg;
+
+	DWORD Task = 0;
+	HANDLE Handle = AvSetMmThreadCharacteristicsW(L"Pro Audio", &Task);
+	Assert(Handle);
+
+	IAudioCaptureClient* CaptureClient = Capture->CaptureClient;
+	uint32_t BytesPerFrame = Capture->Format->nBlockAlign;
+	uint32_t BufferSize = Capture->BufferSize;
+	uint32_t BufferWrite = 0;
+	HANDLE Event = Capture->Event;
+
+	while (WaitForSingleObject(Event, INFINITE) == WAIT_OBJECT_0)
 	{
-		ShowNotification(L"Cannot create output folder!", L"Cannot Start Recording", NIIF_WARNING);
-		ScreenCapture_Stop(&gCapture);
-		ID3D11Device_Release(Device);
-		return;
+		if (Capture->Stop)
+		{
+			break;
+		}
+
+		BYTE* Buffer = NULL;
+		DWORD Flags = 0;
+		UINT32 Frames = 0;
+		UINT64 Position = 0; // in sample count from beginning of stream
+		UINT64 Timestamp = 0; // in QPC unuts
+		while (SUCCEEDED(IAudioCaptureClient_GetBuffer(CaptureClient, &Buffer, &Frames, &Flags, &Position, &Timestamp)) && Frames != 0)
+		{
+			uint32_t BufferAvailable = BufferSize - (BufferWrite - atomic_load_explicit(&Capture->BufferRead, memory_order_relaxed));
+
+			uint32_t WriteSize = sizeof(Frames) + sizeof(Position) + sizeof(Timestamp) + Frames * BytesPerFrame;
+			if (WriteSize <= BufferAvailable)
+			{
+				uint8_t* BufferPtr = Capture->Buffer + (BufferWrite & (BufferSize - 1));
+				CopyMemory(BufferPtr, &Frames, sizeof(Frames)); BufferPtr += sizeof(Frames);
+				CopyMemory(BufferPtr, &Position, sizeof(Position)); BufferPtr += sizeof(Position);
+				CopyMemory(BufferPtr, &Timestamp, sizeof(Timestamp)); BufferPtr += sizeof(Timestamp);
+				if (Flags & AUDCLNT_BUFFERFLAGS_SILENT)
+				{
+					ZeroMemory(BufferPtr, Frames * BytesPerFrame);
+				}
+				else
+				{
+					CopyMemory(BufferPtr, Buffer, Frames * BytesPerFrame);
+				}
+
+				BufferWrite += WriteSize;
+				atomic_store_explicit(&Capture->BufferWrite, BufferWrite, memory_order_release);
+			}
+			else
+			{
+				// TODO: logging/stats when audio ringbuffer is overflowing
+			}
+
+			HR(IAudioCaptureClient_ReleaseBuffer(CaptureClient, Frames));
+			Buffer = NULL;
+			Frames = 0;
+			Position = 0;
+			Timestamp = 0;
+		}
 	}
+	
+	AvRevertMmThreadCharacteristics(Handle);
 
-	WCHAR Filename[256];
-	StrFormat(Filename, L"%04u%02u%02u_%02u%02u%02u.mp4", Time.wYear, Time.wMonth, Time.wDay, Time.wHour, Time.wMinute, Time.wSecond);
+	return 0;
+}
 
-	StrCpyW(gRecordingPath, gConfig.OutputFolder);
-	PathAppendW(gRecordingPath, Filename);
+bool AudioCapture_Start(AudioCapture* Capture, HWND ApplicationWindow)
+{
+	bool Result = false;
 
-	DWM_TIMING_INFO Info = { .cbSize = sizeof(Info) };
-	HR(DwmGetCompositionTimingInfo(NULL, &Info));
-
-	DWORD FramerateNum = Info.rateCompose.uiNumerator;
-	DWORD FramerateDen = Info.rateCompose.uiDenominator;
-	if (gConfig.VideoMaxFramerate > 0 && gConfig.VideoMaxFramerate * FramerateDen < FramerateNum)
+	if (ApplicationWindow)
 	{
-		// limit rate only if max framerate is specified and it is lower than compositor framerate
-		gRecordingLimitFramerate = gConfig.VideoMaxFramerate;
-		FramerateNum = gConfig.VideoMaxFramerate;
-		FramerateDen = 1;
+		DWORD ProcessId;
+		DWORD ThreadId = GetWindowThreadProcessId(ApplicationWindow, &ProcessId);
+		if (!ThreadId)
+		{
+			return false;
+		}
+
+		AUDIOCLIENT_ACTIVATION_PARAMS Activation =
+		{
+			.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+			.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+			.ProcessLoopbackParams.TargetProcessId = ProcessId,
+		};
+
+		PROPVARIANT Params =
+		{
+			.vt = VT_BLOB,
+			.blob.cbSize = sizeof(Activation),
+			.blob.pBlobData = (BYTE*)&Activation,
+		};
+
+		AudioCaptureActivate ActivateCompletion =
+		{
+			.Handler.lpVtbl = &AudioCaptureActivateVtbl,
+		};
+		atomic_init(&ActivateCompletion.ReadyFlag, 0);
+
+		IActivateAudioInterfaceAsyncOperation* AsyncOperation;
+		if (FAILED(ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IID_IAudioClient, &Params, &ActivateCompletion.Handler, &AsyncOperation)))
+		{
+			return false;
+		}
+
+		while (!atomic_load_explicit(&ActivateCompletion.ReadyFlag, memory_order_acquire))
+		{
+			uint32_t ReadyFlag = 0;
+			WaitOnAddress((PVOID)&ActivateCompletion.ReadyFlag, &ReadyFlag, sizeof(ReadyFlag), INFINITE);
+		}
+
+		HRESULT ActivateResult;
+		IUnknown* ActivateUnknown;
+		if (SUCCEEDED(IActivateAudioInterfaceAsyncOperation_GetActivateResult(AsyncOperation, &ActivateResult, &ActivateUnknown)) && SUCCEEDED(ActivateResult))
+		{
+			IAudioClient* Client;
+			HR(IUnknown_QueryInterface(ActivateUnknown, &IID_IAudioClient, &Client));
+			IUnknown_Release(ActivateUnknown);
+
+			WAVEFORMATEXTENSIBLE* FormatEx = CoTaskMemAlloc(sizeof(*FormatEx));
+			Assert(FormatEx);
+
+			// IAudioClient you get from ActivateAudioInterfaceAsync does not support GetMixFormat() and GetDevicePeriod() methods
+			FormatEx->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+			FormatEx->Format.nChannels = 2;
+			FormatEx->Format.wBitsPerSample = 32;
+			FormatEx->Format.nSamplesPerSec = 48000;
+			FormatEx->Format.nBlockAlign = (FormatEx->Format.nChannels * FormatEx->Format.wBitsPerSample) / 8;
+			FormatEx->Format.nAvgBytesPerSec = FormatEx->Format.nSamplesPerSec * FormatEx->Format.nBlockAlign;
+			FormatEx->Format.cbSize = sizeof(*FormatEx) - sizeof(FormatEx->Format);
+			FormatEx->Samples.wValidBitsPerSample = FormatEx->Format.wBitsPerSample;
+			FormatEx->dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+			FormatEx->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+			DWORD Flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+			HR(IAudioClient_Initialize(Client, AUDCLNT_SHAREMODE_SHARED, Flags, MF_UNITS_PER_SECOND, 0, &FormatEx->Format, NULL));
+			HR(IAudioClient_GetService(Client, &IID_IAudioCaptureClient, (void**)&Capture->CaptureClient));
+
+			Capture->PlayClient = NULL;
+			Capture->RecordClient = Client;
+			Capture->Format = &FormatEx->Format;
+
+			Capture->StartPos = 0;
+			Capture->UseDeviceTimestamp = true;
+			Capture->CheckDeviceTimestamp = false;
+
+			Result = true;
+
+			IActivateAudioInterfaceAsyncOperation_Release(AsyncOperation);
+		}
+	}
+	else if (ApplicationWindow == (HWND)-1)
+	{
+		// Microphone capture: use default audio input (capture) device
+		IMMDeviceEnumerator* Enumerator;
+		HR(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&Enumerator));
+
+		IMMDevice* Device;
+		if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Enumerator, eCapture, eConsole, &Device)))
+		{
+			IMMDeviceEnumerator_Release(Enumerator);
+			return false;
+		}
+
+		IAudioClient* Client;
+		HR(IMMDevice_Activate(Device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&Client));
+
+		WAVEFORMATEX* Format;
+		HR(IAudioClient_GetMixFormat(Client, &Format));
+
+		REFERENCE_TIME DefaultPeriod, MinimumPeriod;
+		HR(IAudioClient_GetDevicePeriod(Client, &DefaultPeriod, &MinimumPeriod));
+
+		DWORD Flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+		HR(IAudioClient_Initialize(Client, AUDCLNT_SHAREMODE_SHARED, Flags, DefaultPeriod, 0, Format, NULL));
+		HR(IAudioClient_GetService(Client, &IID_IAudioCaptureClient, (void**)&Capture->CaptureClient));
+
+		Capture->PlayClient = NULL;
+		Capture->RecordClient = Client;
+		Capture->Format = Format;
+
+		Capture->StartPos = 0;
+		Capture->UseDeviceTimestamp = false;
+		Capture->CheckDeviceTimestamp = false;
+
+		IMMDevice_Release(Device);
+		IMMDeviceEnumerator_Release(Enumerator);
+
+		Result = true;
 	}
 	else
 	{
-		gRecordingLimitFramerate = 0;
-	}
+		IMMDeviceEnumerator* Enumerator;
+		HR(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&Enumerator));
 
-	EncoderConfig EncConfig =
-	{
-		.Width = gCapture.Rect.right - gCapture.Rect.left,
-		.Height = gCapture.Rect.bottom - gCapture.Rect.top,
-		.FramerateNum = FramerateNum,
-		.FramerateDen = FramerateDen,
-		.Config = &gConfig,
-	};
-
-	if (gConfig.CaptureAudio)
-	{
-		HWND ApplicationWindow = gConfig.ApplicationLocalAudio && AudioCapture_CanCaptureApplicationLocal() ? Window : NULL;
-		if (!AudioCapture_Start(&gAudio, ApplicationWindow))
+		IMMDevice* Device;
+		if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Enumerator, eRender, eConsole, &Device)))
 		{
-			ShowNotification(L"Cannot capture audio!", L"Cannot Start Recording", NIIF_WARNING);
-			ScreenCapture_Stop(&gCapture);
-			ID3D11Device_Release(Device);
-			return;
+			// no playback device found
+			IMMDeviceEnumerator_Release(Enumerator);
+			return false;
 		}
-		EncConfig.AudioFormat = gAudio.Format;
-	}
 
-	if (gConfig.CaptureMicrophone)
-	{
-		if (!AudioCapture_Start(&gMic, (HWND)-1))
+		// setup playback for slience, otherwise loopback recording does not provide any data if nothing is playing
 		{
-			// Non-fatal: warn but continue without mic
-			ShowNotification(L"Cannot capture microphone. Recording without mic.", L"Warning", NIIF_WARNING);
+			IAudioClient* Client;
+			HR(IMMDevice_Activate(Device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&Client));
+
+			WAVEFORMATEX* Format;
+			HR(IAudioClient_GetMixFormat(Client, &Format));
+			HR(IAudioClient_Initialize(Client, AUDCLNT_SHAREMODE_SHARED, 0, MF_UNITS_PER_SECOND, 0, Format, NULL));
+
+			IAudioRenderClient* Render;
+			HR(IAudioClient_GetService(Client, &IID_IAudioRenderClient, &Render));
+
+			BYTE* Buffer;
+			HR(IAudioRenderClient_GetBuffer(Render, Format->nSamplesPerSec, &Buffer));
+			HR(IAudioRenderClient_ReleaseBuffer(Render, Format->nSamplesPerSec, AUDCLNT_BUFFERFLAGS_SILENT));
+			IAudioRenderClient_Release(Render);
+			CoTaskMemFree(Format);
+
+			HR(IAudioClient_Start(Client));
+			Capture->PlayClient = Client;
 		}
-		else if (!gConfig.CaptureAudio)
+
+		// loopback recording
 		{
-			// Mic is the only audio source — use its format for the encoder
-			EncConfig.AudioFormat = gMic.Format;
+			IAudioClient* Client;
+			HR(IMMDevice_Activate(Device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&Client));
+
+			WAVEFORMATEX* Format;
+			HR(IAudioClient_GetMixFormat(Client, &Format));
+
+			REFERENCE_TIME DefaultPeriod, MinimumPeriod;
+			HR(IAudioClient_GetDevicePeriod(Client, &DefaultPeriod, &MinimumPeriod));
+
+			DWORD Flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+			HR(IAudioClient_Initialize(Client, AUDCLNT_SHAREMODE_SHARED, Flags, DefaultPeriod, 0, Format, NULL));
+			HR(IAudioClient_GetService(Client, &IID_IAudioCaptureClient, (void**)&Capture->CaptureClient));
+
+			Capture->RecordClient = Client;
+			Capture->Format = Format;
+
+			Capture->StartPos = 0;
+			Capture->UseDeviceTimestamp = true;
+			Capture->CheckDeviceTimestamp = true;
 		}
+
+		Result = true;
+
+		IMMDevice_Release(Device);
+		IMMDeviceEnumerator_Release(Enumerator);
 	}
 
-	if (!Encoder_Start(&gEncoder, Device, gRecordingPath, &EncConfig))
+	if (Result)
 	{
-		if (gConfig.CaptureAudio)
-		{
-			AudioCapture_Stop(&gAudio);
-		}
-		ScreenCapture_Stop(&gCapture);
-		ID3D11Device_Release(Device);
-		return;
+		// it seems process local loopback device does not use any buffering, even when we asked for 1 second of buffer
+		// so we must implement our own ringbuffer to be able to dequeue incoming data as fast as possible
+		
+		DWORD BufferSizeIndex;
+		_BitScanReverse(&BufferSizeIndex, max(65535, Capture->Format->nAvgBytesPerSec - 1));
+		uint32_t BufferSize = 1 << (BufferSizeIndex + 1);
+		Assert(BufferSize % 65536 == 0);
+
+		// allocate ringbuffer for 1 second of data, rounded up to next pow2, at least 64KB
+		uint8_t* Placeholder1 = (uint8_t*)VirtualAlloc2(NULL, NULL, 2 * BufferSize, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
+		uint8_t* Placeholder2 = (uint8_t*)Placeholder1 + BufferSize;
+		Assert(Placeholder1);
+
+		BOOL Ok = VirtualFree(Placeholder1, BufferSize, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
+		Assert(Ok);
+
+		HANDLE Section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, BufferSize, NULL);
+		Assert(Section);
+
+		void* View1 = MapViewOfFile3(Section, NULL, Placeholder1, 0, BufferSize, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0);
+		Assert(View1);
+
+		void* View2 = MapViewOfFile3(Section, NULL, Placeholder2, 0, BufferSize, MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0);
+		Assert(View2);
+
+		CloseHandle(Section);
+		VirtualFree(Placeholder1, 0, MEM_RELEASE);
+		VirtualFree(Placeholder2, 0, MEM_RELEASE);
+
+		Capture->Buffer = View1;
+		Capture->BufferSize = BufferSize;
+		atomic_init(&Capture->BufferRead, 0);
+		atomic_init(&Capture->BufferWrite, 0);
+
+		Capture->Stop = false;
+
+		Capture->Event = CreateEventW(NULL, FALSE, FALSE, NULL);
+		Assert(Capture->Event);
+
+		Capture->Thread = CreateThread(NULL, 0, &AudioCapture__Thread, Capture, 0, NULL);
+		Assert(Capture->Thread);
+
+		HR(IAudioClient_SetEventHandle(Capture->RecordClient, Capture->Event));
+		HR(IAudioClient_Start(Capture->RecordClient));
+
+		LARGE_INTEGER Start;
+		QueryPerformanceCounter(&Start);
+		Capture->StartQpc = Start.QuadPart;
+
+		LARGE_INTEGER Freq;
+		QueryPerformanceFrequency(&Freq);
+		Capture->Freq = Freq.QuadPart;
 	}
 
-	gRecordingNextTooltip = 0;
-	gRecordingNextEncode = 0;
-	gRecordingLastFrame = 0;
-	gRecordingDroppedFrames = 0;
-	ScreenCapture_Start(&gCapture, gConfig.MouseCursor, gConfig.ShowRecordingBorder, gConfig.IncludeSecondaryWindows);
-
-	if (gConfig.CaptureAudio)
-	{
-		SetTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER, WCAP_AUDIO_CAPTURE_INTERVAL, NULL);
-	}
-	else if (gConfig.CaptureMicrophone)
-	{
-		SetTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER, WCAP_AUDIO_CAPTURE_INTERVAL, NULL);
-	}
-	SetTimer(gWindow, WCAP_VIDEO_UPDATE_TIMER, WCAP_VIDEO_UPDATE_INTERVAL, NULL);
-
-	UpdateTrayIcon(gIcon2);
-	gRecordingState = SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
-	gRecording = TRUE;
-
-	ID3D11Device_Release(Device);
+	return Result;
 }
 
-static void EncodeCapturedAudio(void)
+void AudioCapture_Stop(AudioCapture* Capture)
 {
-	if (gEncoder.StartTime == 0)
+	Capture->Stop = true;
+	SetEvent(Capture->Event);
+	WaitForSingleObject(Capture->Thread, INFINITE);
+
+	CloseHandle(Capture->Thread);
+	CloseHandle(Capture->Event);
+
+	UnmapViewOfFileEx(Capture->Buffer, 0);
+	UnmapViewOfFileEx(Capture->Buffer + Capture->BufferSize, 0);
+
+	CoTaskMemFree(Capture->Format);
+	if (Capture->PlayClient)
 	{
-		// we don't know when first video frame starts yet
-		return;
+		IAudioClient_Release(Capture->PlayClient);
+		Capture->PlayClient = NULL;
+	}
+	IAudioCaptureClient_Release(Capture->CaptureClient);
+	IAudioClient_Release(Capture->RecordClient);
+}
+
+void AudioCapture_Flush(AudioCapture* Capture)
+{
+	if (Capture->PlayClient)
+	{
+		HR(IAudioClient_Stop(Capture->PlayClient));
+	}
+	HR(IAudioClient_Stop(Capture->RecordClient));
+}
+
+bool AudioCapture_GetData(AudioCapture* Capture, AudioCaptureData* Data, uint64_t ExpectedTimestamp)
+{
+	uint32_t Frames;
+	uint64_t Position;
+	uint64_t Timestamp;
+
+	uint32_t BufferRead = atomic_load_explicit(&Capture->BufferRead, memory_order_relaxed);
+	uint32_t AvailableSize = atomic_load_explicit(&Capture->BufferWrite, memory_order_acquire) - BufferRead;
+	if (AvailableSize < sizeof(Frames) + sizeof(Position) + sizeof(Timestamp))
+	{
+		return false;
 	}
 
-	// drain mic buffer when not capturing system audio (mic-only)
-	if (!gConfig.CaptureAudio && gConfig.CaptureMicrophone && gMic.CaptureClient)
+	uint8_t* BufferPtr = Capture->Buffer + (BufferRead & (Capture->BufferSize - 1));
+	CopyMemory(&Frames, BufferPtr, sizeof(Frames)); BufferPtr += sizeof(Frames);
+	CopyMemory(&Position, BufferPtr, sizeof(Position)); BufferPtr += sizeof(Position);
+	CopyMemory(&Timestamp, BufferPtr, sizeof(Timestamp)); BufferPtr += sizeof(Timestamp);
+
+	uint32_t ReadSize = sizeof(Frames) + sizeof(Position) + sizeof(Timestamp) + Frames * Capture->Format->nBlockAlign;
+	if (AvailableSize < ReadSize)
 	{
-		AudioCaptureData MicData;
-		while (AudioCapture_GetData(&gMic, &MicData, gEncoder.StartTime))
+		return false;
+	}
+
+	if (Capture->CheckDeviceTimestamp)
+	{
+		// first time we check if device timestamp is resonable - not more than 500 msec away from expected
+		if (ExpectedTimestamp)
 		{
-			UINT32 FramesToEncode = (UINT32)MicData.Count;
-			if (MicData.Time < gEncoder.StartTime)
+			const int64_t MaxDelta = 500 * Capture->Freq;
+			int64_t Delta = 1000 * (ExpectedTimestamp - Timestamp);
+
+			if (Delta < -MaxDelta || Delta > +MaxDelta)
 			{
-				const UINT32 SampleRate = gMic.Format->nSamplesPerSec;
-				UINT64 TimeToSkip = gEncoder.StartTime - MicData.Time;
-				UINT32 FramesToSkip = (UINT32)((TimeToSkip * SampleRate - 1) / MF_UNITS_PER_SECOND + 1);
-				if (FramesToSkip < FramesToEncode)
-				{
-					MicData.Time += FramesToSkip * MF_UNITS_PER_SECOND / SampleRate;
-					FramesToEncode -= FramesToSkip;
-					if (MicData.Samples)
-						MicData.Samples = (BYTE*)MicData.Samples + FramesToSkip * gMic.Format->nBlockAlign;
-				}
-				else
-				{
-					FramesToEncode = 0;
-				}
+				Capture->UseDeviceTimestamp = false;
 			}
-			if (FramesToEncode != 0)
-			{
-				Assert(MicData.Time >= gEncoder.StartTime);
-				Encoder_NewSamples(&gEncoder, MicData.Samples, FramesToEncode, MicData.Time, gTickFreq.QuadPart);
-			}
-			AudioCapture_ReleaseData(&gMic, &MicData);
+			Capture->StartPos = Position;
 		}
-		return;
+		Capture->CheckDeviceTimestamp = false;
 	}
 
-	AudioCaptureData Data;
-	while (AudioCapture_GetData(&gAudio, &Data, gEncoder.StartTime))
+	if (Capture->UseDeviceTimestamp)
 	{
-		UINT32 FramesToEncode = (UINT32)Data.Count;
-		if (Data.Time < gEncoder.StartTime)
-		{
-			const UINT32 SampleRate = gAudio.Format->nSamplesPerSec;
-			const UINT32 BytesPerFrame = gAudio.Format->nBlockAlign;
-
-			// figure out how much time (100nsec units) and frame count to skip from current buffer
-			UINT64 TimeToSkip = gEncoder.StartTime - Data.Time;
-			UINT32 FramesToSkip = (UINT32)((TimeToSkip * SampleRate - 1) / MF_UNITS_PER_SECOND + 1);
-			if (FramesToSkip < FramesToEncode)
-			{
-				// need to skip part of captured data
-				Data.Time += FramesToSkip * MF_UNITS_PER_SECOND / SampleRate;
-				FramesToEncode -= FramesToSkip;
-				if (Data.Samples)
-				{
-					Data.Samples = (BYTE*)Data.Samples + FramesToSkip * BytesPerFrame;
-				}
-			}
-			else
-			{
-				// need to skip all of captured data
-				FramesToEncode = 0;
-			}
-		}
-		if (FramesToEncode != 0)
-		{
-			Assert(Data.Time >= gEncoder.StartTime);
-
-			// Mix in microphone audio if available and formats match (both float32)
-			if (gConfig.CaptureMicrophone && gMic.CaptureClient && Data.Samples &&
-				gMic.Format->wBitsPerSample == 32 && gAudio.Format->wBitsPerSample == 32)
-			{
-				UINT32 SysChannels = gAudio.Format->nChannels;
-				UINT32 MicChannels = gMic.Format->nChannels;
-				UINT32 SampleCount = FramesToEncode * SysChannels;
-				float* Dst = (float*)Data.Samples;
-
-				// We collect mic samples into a temp scratch area and add
-				AudioCaptureData MicData;
-				if (AudioCapture_GetData(&gMic, &MicData, gEncoder.StartTime))
-				{
-					UINT32 MicFrames = (UINT32)MicData.Count;
-					if (MicFrames > FramesToEncode) MicFrames = FramesToEncode;
-
-					if (MicData.Samples)
-					{
-						float* Src = (float*)MicData.Samples;
-						for (UINT32 f = 0; f < MicFrames; f++)
-						{
-							for (UINT32 c = 0; c < SysChannels; c++)
-							{
-								// map mic channel (mono mic -> both channels, stereo mic -> direct)
-								UINT32 MicCh = (MicChannels == 1) ? 0 : (c < MicChannels ? c : MicChannels - 1);
-								Dst[f * SysChannels + c] += Src[f * MicChannels + MicCh];
-							}
-						}
-					}
-					AudioCapture_ReleaseData(&gMic, &MicData);
-				}
-			}
-
-			Encoder_NewSamples(&gEncoder, Data.Samples, FramesToEncode, Data.Time, gTickFreq.QuadPart);
-		}
-		AudioCapture_ReleaseData(&gAudio, &Data);
-	}
-}
-
-static void StopRecording(void)
-{
-	gRecording = FALSE;
-	SetThreadExecutionState(gRecordingState);
-
-	if (gConfig.CaptureAudio)
-	{
-		KillTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER);
-		AudioCapture_Flush(&gAudio);
-		EncodeCapturedAudio();
-		AudioCapture_Stop(&gAudio);
-	}
-	else if (gConfig.CaptureMicrophone && gMic.CaptureClient)
-	{
-		KillTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER);
-		AudioCapture_Flush(&gMic);
-		EncodeCapturedAudio();
-	}
-	if (gConfig.CaptureMicrophone && gMic.CaptureClient)
-	{
-		AudioCapture_Stop(&gMic);
-		gMic.CaptureClient = NULL;
-	}
-	KillTimer(gWindow, WCAP_VIDEO_UPDATE_TIMER);
-
-	ScreenCapture_Stop(&gCapture);
-	Encoder_Stop(&gEncoder);
-	if (gConfig.OpenFolder)
-	{
-		ShowFileInFolder(gRecordingPath);
-	}
-
-	SetWindowPos(gWindow, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE);
-	SetWindowLongW(gWindow, GWL_EXSTYLE, 0);
-
-	UpdateTrayIcon(gIcon1);
-	UpdateTrayTitle(WCAP_TITLE);
-}
-
-static ID3D11Device* CreateDevice(void)
-{
-	IDXGIAdapter* Adapter = NULL;
-
-	if (gConfig.HardwareEncoder)
-	{
-		IDXGIFactory* Factory;
-		if (SUCCEEDED(CreateDXGIFactory(&IID_IDXGIFactory, (void**)&Factory)))
-		{
-			IDXGIFactory6* Factory6;
-			if (SUCCEEDED(IDXGIFactory_QueryInterface(Factory, &IID_IDXGIFactory6, (void**)&Factory6)))
-			{
-				DXGI_GPU_PREFERENCE Preference = gConfig.HardwarePreferIntegrated ? DXGI_GPU_PREFERENCE_MINIMUM_POWER : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
-				if (FAILED(IDXGIFactory6_EnumAdapterByGpuPreference(Factory6, 0, Preference, &IID_IDXGIAdapter, &Adapter)))
-				{
-					// just to be safe
-					Adapter = NULL;
-				}
-				IDXGIFactory6_Release(Factory6);
-			}
-			IDXGIFactory_Release(Factory);
-		}
-	}
-
-	ID3D11Device* Device;
-
-	UINT flags = 0;
-#ifndef NDEBUG
-	flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
-	// if adapter is selected then driver type must be unknown
-	D3D_DRIVER_TYPE Driver = Adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
-	if (FAILED(D3D11CreateDevice(Adapter, Driver, NULL, flags, (D3D_FEATURE_LEVEL[]) { D3D_FEATURE_LEVEL_11_0 }, 1, D3D11_SDK_VERSION, &Device, NULL, NULL)))
-	{
-		ShowNotification(L"Cannot to create D3D11 device!", L"Error", NIIF_ERROR);
-		Device = NULL;
-	}
-	if (Adapter)
-	{
-		IDXGIAdapter_Release(Adapter);
-	}
-
-	if (flags & D3D11_CREATE_DEVICE_DEBUG)
-	{
-		ID3D11InfoQueue* Info;
-		if (SUCCEEDED(ID3D11Device_QueryInterface(Device, &IID_ID3D11InfoQueue, &Info)))
-		{
-			ID3D11InfoQueue_SetBreakOnSeverity(Info, D3D11_MESSAGE_SEVERITY_CORRUPTION, TRUE);
-			ID3D11InfoQueue_SetBreakOnSeverity(Info, D3D11_MESSAGE_SEVERITY_ERROR, TRUE);
-			ID3D11InfoQueue_Release(Info);
-		}
-	}
-
-	return Device;
-}
-
-static void CaptureWindow(void)
-{
-	HWND Window = GetForegroundWindow();
-	if (Window == NULL)
-	{
-		ShowNotification(L"No window is selected!", L"Cannot Start Recording", NIIF_WARNING);
-		return;
-	}
-
-	// figure out who is owner of child window if somehow child window is selected (happens for fancy winamp skins)
-	HWND Parent = GetParent(Window);
-	while (Parent != NULL)
-	{
-		Window = Parent;
-		Parent = GetParent(Window);
-	}
-
-	DWORD Affinity;
-	BOOL Success = GetWindowDisplayAffinity(Window, &Affinity);
-	Assert(Success);
-
-	if (Affinity != WDA_NONE)
-	{
-		ShowNotification(L"Window is excluded from capture!", L"Cannot Start Recording", NIIF_WARNING);
-		return;
-	}
-
-	LONG ExStyle = GetWindowLongW(Window, GWL_EXSTYLE);
-	if (ExStyle & WS_EX_TOOLWINDOW)
-	{
-		ShowNotification(L"Cannot capture toolbar window!", L"Cannot Start Recording", NIIF_WARNING);
-		return;
-	}
-
-	ID3D11Device* Device = CreateDevice();
-	if (!Device)
-	{
-		return;
-	}
-
-	if (!ScreenCapture_CreateForWindow(&gCapture, Device, Window, gConfig.OnlyClientArea, !gConfig.KeepRoundedWindowCorners))
-	{
-		ID3D11Device_Release(Device);
-		ShowNotification(L"Cannot record selected window!", L"Error", NIIF_WARNING);
-		return;
-	}
-
-	StartRecording(Device, Window);
-}
-
-static void CaptureMonitor(void)
-{
-	POINT Mouse;
-	GetCursorPos(&Mouse);
-
-	HMONITOR Monitor = MonitorFromPoint(Mouse, MONITOR_DEFAULTTONULL);
-	if (Monitor == NULL)
-	{
-		ShowNotification(L"Unknown monitor!", L"Cannot Start Recording", NIIF_WARNING);
-		return;
-	}
-
-	ID3D11Device* Device = CreateDevice();
-	if (!Device)
-	{
-		return;
-	}
-
-	if (!ScreenCapture_CreateForMonitor(&gCapture, Device, Monitor, NULL))
-	{
-		ShowNotification(L"Cannot record selected monitor!", L"Error", NIIF_WARNING);
-		return;
-	}
-
-	StartRecording(Device, NULL);
-}
-
-static void CaptureRegionInit(void)
-{
-	POINT Mouse;
-	GetCursorPos(&Mouse);
-
-	HMONITOR Monitor = MonitorFromPoint(Mouse, MONITOR_DEFAULTTONULL);
-	if (Monitor == NULL)
-	{
-		ShowNotification(L"Unknown monitor!", L"Cannot Start Recording", NIIF_WARNING);
-		return;
-	}
-
-	MONITORINFOEXW Info = { .cbSize = sizeof(Info) };
-	GetMonitorInfoW(Monitor, (LPMONITORINFO)&Info);
-
-	HDC DeviceContext = CreateDCW(L"DISPLAY", Info.szDevice, NULL, NULL);
-	if (DeviceContext == NULL)
-	{
-		ShowNotification(L"Error getting HDC of monitor!", L"Cannot Start Recording", NIIF_WARNING);
-		return;
-	}
-
-	DWORD Width = Info.rcMonitor.right - Info.rcMonitor.left;
-	DWORD Height = Info.rcMonitor.bottom - Info.rcMonitor.top;
-
-	// capture image from desktop
-
-	HDC MemoryContext = CreateCompatibleDC(DeviceContext);
-	Assert(MemoryContext);
-
-	HBITMAP MemoryBitmap = CreateCompatibleBitmap(DeviceContext, Width, Height);
-	Assert(MemoryBitmap);
-
-	SelectObject(MemoryContext, MemoryBitmap);
-	BitBlt(MemoryContext, 0, 0, Width, Height, DeviceContext, 0, 0, SRCCOPY);
-
-	// prepare darkened image by doing alpha blend
-
-	HDC MemoryDarkContext = CreateCompatibleDC(DeviceContext);
-	Assert(MemoryDarkContext);
-
-	HBITMAP MemoryDarkBitmap = CreateCompatibleBitmap(DeviceContext, Width, Height);
-	Assert(MemoryDarkBitmap);
-
-	BLENDFUNCTION Blend =
-	{
-		.BlendOp = AC_SRC_OVER,
-		.SourceConstantAlpha = 0x40,
-	};
-
-	SelectObject(MemoryDarkContext, MemoryDarkBitmap);
-	AlphaBlend(MemoryDarkContext, 0, 0, Width, Height, MemoryContext, 0, 0, Width, Height, Blend);
-
-	// done
-
-	DeleteDC(DeviceContext);
-
-	gRectMonitor = Monitor;
-	gRectContext = MemoryContext;
-	gRectDarkContext = MemoryDarkContext;
-	gRectBitmap = MemoryBitmap;
-	gRectDarkBitmap = MemoryDarkBitmap;
-	gRectWidth = Width;
-	gRectHeight = Height;
-	gRectSelected = FALSE;
-	gRectResize = WCAP_RESIZE_NONE;
-	gRectSetSize[0] = gRectSetSize[1] = 0;
-	gRectSetSizeClick = FALSE;
-
-	SetCursor(gCursorResize[WCAP_RESIZE_NONE]);
-	SetWindowPos(gWindow, HWND_TOPMOST, Info.rcMonitor.left, Info.rcMonitor.top, Width, Height, SWP_SHOWWINDOW);
-	SetForegroundWindow(gWindow);
-	InvalidateRect(gWindow, NULL, FALSE);
-}
-
-static void CaptureRegionRelease(void)
-{
-	SetWindowPos(gWindow, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE);
-	SetWindowLongW(gWindow, GWL_EXSTYLE, 0);
-
-	if (gRectContext)
-	{
-		DeleteDC(gRectContext);
-		gRectContext = NULL;
-
-		DeleteObject(gRectBitmap);
-		gRectBitmap = NULL;
-
-		DeleteDC(gRectDarkContext);
-		gRectDarkContext = NULL;
-
-		DeleteObject(gRectDarkBitmap);
-		gRectDarkBitmap = NULL;
-	}
-}
-
-static void CaptureRegionDone(void)
-{
-	SetCursor(gCursorArrow);
-	ReleaseCapture();
-
-	CaptureRegionRelease();
-}
-
-static void CaptureRegion(void)
-{
-	CaptureRegionDone();
-
-	MONITORINFO Info = { .cbSize = sizeof(Info) };
-	GetMonitorInfoW(gRectMonitor, &Info);
-
-	RECT Rect =
-	{
-		.left   = gRectSelection[0].x,
-		.right  = gRectSelection[1].x,
-		.top    = gRectSelection[0].y,
-		.bottom = gRectSelection[1].y,
-	};
-
-	LONG ExStyle = WS_EX_LAYERED | WS_EX_TRANSPARENT;
-	SetWindowLongW(gWindow, GWL_EXSTYLE, ExStyle);
-	SetLayeredWindowAttributes(gWindow, RGB(255, 0, 255), 0, LWA_COLORKEY);
-
-	ID3D11Device* Device = CreateDevice();
-	if (!Device)
-	{
-		CaptureRegionRelease();
-		return;
-	}
-
-	if (!ScreenCapture_CreateForMonitor(&gCapture, Device, gRectMonitor, &Rect))
-	{
-		ShowNotification(L"Cannot record monitor!", L"Error", NIIF_WARNING);
-		CaptureRegionRelease();
-		return;
-	}
-
-	StartRecording(Device, NULL);
-
-	if (gRecording)
-	{
-		int X = Info.rcMonitor.left + Rect.left - (WCAP_RECT_BORDER + 1);
-		int Y = Info.rcMonitor.top + Rect.top - (WCAP_RECT_BORDER + 1);
-		int W = Rect.right - Rect.left + 2 * (WCAP_RECT_BORDER + 1);
-		int H = Rect.bottom - Rect.top + 2 * (WCAP_RECT_BORDER + 1);
-		SetWindowPos(gWindow, HWND_TOPMOST, X, Y, W, H, SWP_SHOWWINDOW);
-		InvalidateRect(gWindow, NULL, FALSE);
+		Data->Time = MFllMulDiv(Timestamp, Capture->Freq, MF_UNITS_PER_SECOND, 0);
 	}
 	else
 	{
-		CaptureRegionRelease();
-	}
-}
-
-static int GetPointResize(int X, int Y)
-{
-	int BorderX = GetSystemMetrics(SM_CXSIZEFRAME);
-	int BorderY = GetSystemMetrics(SM_CYSIZEFRAME);
-
-	int X0 = min(gRectSelection[0].x, gRectSelection[1].x);
-	int Y0 = min(gRectSelection[0].y, gRectSelection[1].y);
-	int X1 = max(gRectSelection[0].x, gRectSelection[1].x);
-	int Y1 = max(gRectSelection[0].y, gRectSelection[1].y);
-
-	POINT P = { X, Y };
-
-	RECT TL = { X0 - BorderX, Y0 - BorderY, X0 + BorderX, Y0 + BorderY };
-	if (PtInRect(&TL, P)) return WCAP_RESIZE_TL;
-
-	RECT TR = { X1 - BorderX, Y0 - BorderY, X1 + BorderX, Y0 + BorderY };
-	if (PtInRect(&TR, P)) return WCAP_RESIZE_TR;
-
-	RECT BL = { X0 - BorderX, Y1 - BorderY, X0 + BorderX, Y1 + BorderY };
-	if (PtInRect(&BL, P)) return WCAP_RESIZE_BL;
-
-	RECT BR = { X1 - BorderX, Y1 - BorderY, X1 + BorderX, Y1 + BorderY };
-	if (PtInRect(&BR, P)) return WCAP_RESIZE_BR;
-
-	RECT T = { X0, Y0 - BorderY, X1, Y0 + BorderY };
-	if (PtInRect(&T, P)) return WCAP_RESIZE_T;
-
-	RECT B = { X0, Y1 - BorderY, X1, Y1 + BorderY };
-	if (PtInRect(&B, P)) return WCAP_RESIZE_B;
-
-	RECT L = { X0 - BorderX, Y0, X0 + BorderX, Y1 };
-	if (PtInRect(&L, P)) return WCAP_RESIZE_L;
-
-	RECT R = { X1 - BorderX, Y0, X1 + BorderX, Y1 };
-	if (PtInRect(&R, P)) return WCAP_RESIZE_R;
-
-	RECT M = { X0, Y0, X1, Y1 };
-	if (PtInRect(&M, P)) return WCAP_RESIZE_M;
-
-	return WCAP_RESIZE_NONE;
-}
-
-void DisableHotKeys(void)
-{
-	UnregisterHotKey(gWindow, HOT_RECORD_MONITOR);
-	UnregisterHotKey(gWindow, HOT_RECORD_WINDOW);
-	UnregisterHotKey(gWindow, HOT_RECORD_REGION);
-}
-
-BOOL EnableHotKeys(void)
-{
-	BOOL Success = TRUE;
-	if (gConfig.ShortcutMonitor)
-	{
-		Success = Success && RegisterHotKey(gWindow, HOT_RECORD_MONITOR, HOT_GET_MOD(gConfig.ShortcutMonitor), HOT_GET_KEY(gConfig.ShortcutMonitor));
-	}
-	if (gConfig.ShortcutWindow)
-	{
-		Success = Success && RegisterHotKey(gWindow, HOT_RECORD_WINDOW, HOT_GET_MOD(gConfig.ShortcutWindow), HOT_GET_KEY(gConfig.ShortcutWindow));
-	}
-	if (gConfig.ShortcutRegion)
-	{
-		Success = Success && RegisterHotKey(gWindow, HOT_RECORD_REGION, HOT_GET_MOD(gConfig.ShortcutRegion), HOT_GET_KEY(gConfig.ShortcutRegion));
-	}
-	return Success;
-}
-
-static void AdjustRectSizeMultipleOf2(int Adjust, int Ref)
-{
-	int W = gRectSelection[Ref].x - gRectSelection[Adjust].x;
-	W = (W + (W > 0)) & ~1;
-	gRectSelection[Adjust].x = gRectSelection[Ref].x - W;
-
-	int H = gRectSelection[Ref].y - gRectSelection[Adjust].y;
-	H = (H + (H > 0)) & ~1;
-	gRectSelection[Adjust].y = gRectSelection[Ref].y - H;
-}
-
-static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
-{
-	if (Message == WM_CREATE)
-	{
-		HR(BufferedPaintInit());
-		AddTrayIcon(Window);
-		return 0;
-	}
-	else if (Message == WM_DESTROY)
-	{
-		if (gRecording)
-		{
-			StopRecording();
-		}
-		RemoveTrayIcon(Window);
-		PostQuitMessage(0);
-		return 0;
-	}
-	else if (Message == WM_CLOSE)
-	{
-		if (gRectContext)
-		{
-			CaptureRegionDone();
-		}
-		return 0;
-	}
-	else if (Message == WM_ACTIVATEAPP)
-	{
-		if (gRectContext)
-		{
-			if (WParam == FALSE)
-			{
-				CaptureRegionDone();
-				return 0;
-			}
-		}
-	}
-	else if (Message == WM_KEYDOWN)
-	{
-		if (gRectContext)
-		{
-			if (WParam == VK_ESCAPE)
-			{
-				CaptureRegionDone();
-				return 0;
-			}
-			else if (WParam == VK_RETURN)
-			{
-				if (gRectSelected)
-				{
-					CaptureRegion();
-				}
-				return 0;
-			}
-		}
-	}
-	else if (Message == WM_LBUTTONDOWN)
-	{
-		if (gRectContext)
-		{
-			if (gRectSetSize[0])
-			{
-				gRectSetSizeClick = TRUE;
-				gRectSelection[1].x = gRectSelection[0].x + gRectSetSize[0];
-				gRectSelection[1].y = gRectSelection[0].y + gRectSetSize[1];
-				InvalidateRect(Window, NULL, FALSE);
-			}
-			else
-			{
-				int X = GET_X_LPARAM(LParam);
-				int Y = GET_Y_LPARAM(LParam);
-
-				int Resize = gRectSelected ? GetPointResize(X, Y) : WCAP_RESIZE_NONE;
-				if (Resize == WCAP_RESIZE_NONE)
-				{
-					// inital rectangle will be empty
-					gRectSelection[0].x = gRectSelection[1].x = X;
-					gRectSelection[0].y = gRectSelection[1].y = Y;
-					gRectSelected = FALSE;
-
-					InvalidateRect(Window, NULL, FALSE);
-				}
-				else
-				{
-					// resizing direction
-					gRectMousePos = (POINT){ X, Y };
-				}
-
-				gRectResize = Resize;
-				SetCapture(Window);
-			}
-			return 0;
-		}
-	}
-	else if (Message == WM_LBUTTONUP)
-	{
-		if (gRectContext)
-		{
-			if (gRectSetSizeClick)
-			{
-				gRectSetSizeClick = FALSE;
-			}
-			else
-			{
-				if (gRectSelected)
-				{
-					// fix the selected rectangle coordinates, so next resizing starts on the correct side
-					int X0 = min(gRectSelection[0].x, gRectSelection[1].x);
-					int Y0 = min(gRectSelection[0].y, gRectSelection[1].y);
-					int X1 = max(gRectSelection[0].x, gRectSelection[1].x);
-					int Y1 = max(gRectSelection[0].y, gRectSelection[1].y);
-					gRectSelection[0] = (POINT){ X0, Y0 };
-					gRectSelection[1] = (POINT){ X1, Y1 };
-				}
-				ReleaseCapture();
-			}
-			return 0;
-		}
-	}
-	else if (Message == WM_MOUSEMOVE)
-	{
-		if (gRectContext)
-		{
-			int X = GET_X_LPARAM(LParam);
-			int Y = GET_Y_LPARAM(LParam);
-
-			if (gRectSetSize[0])
-			{
-				SetCursor(gCursorClick);
-				InvalidateRect(Window, NULL, FALSE);
-			}
-			else if (gRectSetSizeClick)
-			{
-				InvalidateRect(Window, NULL, FALSE);
-			}
-			else if (WParam & MK_LBUTTON)
-			{
-				BOOL Update = FALSE;
-
-				if (gRectResize == WCAP_RESIZE_TL || gRectResize == WCAP_RESIZE_L || gRectResize == WCAP_RESIZE_BL)
-				{
-					// left moved
-					gRectSelection[0].x = X;
-					AdjustRectSizeMultipleOf2(0, 1);
-					Update = TRUE;
-				}
-				else if (gRectResize == WCAP_RESIZE_TR || gRectResize == WCAP_RESIZE_R || gRectResize == WCAP_RESIZE_BR)
-				{
-					// right moved
-					gRectSelection[1].x = X;
-					AdjustRectSizeMultipleOf2(1, 0);
-					Update = TRUE;
-				}
-
-				if (gRectResize == WCAP_RESIZE_TL || gRectResize == WCAP_RESIZE_T || gRectResize == WCAP_RESIZE_TR)
-				{
-					// top moved
-					gRectSelection[0].y = Y;
-					AdjustRectSizeMultipleOf2(0, 1);
-					Update = TRUE;
-				}
-				else if (gRectResize == WCAP_RESIZE_BL || gRectResize == WCAP_RESIZE_B || gRectResize == WCAP_RESIZE_BR)
-				{
-					// bottom moved
-					gRectSelection[1].y = Y;
-					AdjustRectSizeMultipleOf2(1, 0);
-					Update = TRUE;
-				}
-
-				if (gRectResize == WCAP_RESIZE_M)
-				{
-					// if moving whole rectangle update both
-					int DX = X - gRectMousePos.x;
-					int DY = Y - gRectMousePos.y;
-					gRectMousePos = (POINT){ X, Y };
-
-					gRectSelection[0].x += DX;
-					gRectSelection[0].y += DY;
-					gRectSelection[1].x += DX;
-					gRectSelection[1].y += DY;
-
-					Update = TRUE;
-				}
-				else if (gRectResize == WCAP_RESIZE_NONE)
-				{
-					// no resize means we're selecting initial rectangle
-					gRectSelection[1].x = X;
-					gRectSelection[1].y = Y;
-					AdjustRectSizeMultipleOf2(1, 0);
-					if (gRectSelection[0].x != gRectSelection[1].x && gRectSelection[0].y != gRectSelection[1].y)
-					{
-						// when we have non-zero size rectangle, we're good with initial stage
-						gRectSelected = TRUE;
-						Update = TRUE;
-					}
-				}
-
-				if (Update)
-				{
-					InvalidateRect(Window, NULL, FALSE);
-				}
-			}
-			else
-			{
-				int Resize = gRectSelected ? GetPointResize(X, Y) : WCAP_RESIZE_NONE;
-				SetCursor(gCursorResize[Resize]);
-
-				if (Resize == WCAP_RESIZE_NONE)
-				{
-					// in case hovering over resize text
-					InvalidateRect(Window, NULL, FALSE);
-				}
-			}
-
-			return 0;
-		}
-	}
-	else if (Message == WM_TIMER)
-	{
-		if (gRecording)
-		{
-			if (WParam == WCAP_AUDIO_CAPTURE_TIMER)
-			{
-				EncodeCapturedAudio();
-				return 0;
-			}
-			else if (WParam == WCAP_VIDEO_UPDATE_TIMER)
-			{
-				LARGE_INTEGER Time;
-				QueryPerformanceCounter(&Time);
-				Encoder_Update(&gEncoder, Time.QuadPart, gTickFreq.QuadPart);
-				return 0;
-			}
-		}
-	}
-	else if (Message == WM_POWERBROADCAST)
-	{
-		if (WParam == PBT_APMQUERYSUSPEND)
-		{
-			if (gRecording)
-			{
-				if (LParam & 1)
-				{
-					// reject request to suspend when recording
-					return BROADCAST_QUERY_DENY;
-				}
-				else
-				{
-					// if cannot prevent suspend, need to stop recording
-					StopRecording();
-				}
-			}
-			else
-			{
-				// allow to suspend when not recording
-			}
-		}
-		return TRUE;
-	}
-	else if (Message == WM_WCAP_COMMAND)
-	{
-		if (LOWORD(LParam) == WM_RBUTTONUP)
-		{
-			HMENU Menu = CreatePopupMenu();
-			Assert(Menu);
-
-			AppendMenuW(Menu, MF_STRING, CMD_WCAP, WCAP_TITLE);
-			AppendMenuW(Menu, MF_SEPARATOR, 0, NULL);
-			AppendMenuW(Menu, MF_STRING | (gRecording ? MF_DISABLED : 0), CMD_SETTINGS, L"Settings");
-			AppendMenuW(Menu, MF_STRING, CMD_QUIT, L"Exit");
-
-			POINT Mouse;
-			GetCursorPos(&Mouse);
-
-			SetForegroundWindow(Window);
-			int Command = TrackPopupMenu(Menu, TPM_RETURNCMD | TPM_NONOTIFY, Mouse.x, Mouse.y, 0, Window, NULL);
-			if (Command == CMD_WCAP)
-			{
-				ShellExecuteW(NULL, L"open", WCAP_URL, NULL, NULL, SW_SHOWNORMAL);
-			}
-			else if (Command == CMD_QUIT)
-			{
-				DestroyWindow(Window);
-			}
-			else if (Command == CMD_SETTINGS)
-			{
-				if (Config_ShowDialog(&gConfig))
-				{
-					Config_Save(&gConfig, gConfigPath);
-					DisableHotKeys();
-					EnableHotKeys();
-				}
-			}
-
-			DestroyMenu(Menu);
-		}
-		else if (LOWORD(LParam) == WM_LBUTTONDBLCLK)
-		{
-			if (!gRecording)
-			{
-				if (Config_ShowDialog(&gConfig))
-				{
-					Config_Save(&gConfig, gConfigPath);
-					DisableHotKeys();
-					EnableHotKeys();
-				}
-			}
-		}
-		else if (LOWORD(LParam) == NIN_BALLOONUSERCLICK)
-		{
-			// TODO: no idea how to prevent this happening for right-click on tray icon...
-			ShowFileInFolder(gRecordingPath);
-		}
-		return 0;
-	}
-	else if (Message == WM_HOTKEY)
-	{
-		if (gRecording)
-		{
-			StopRecording();
-		}
-		else if (!gRecordingStarted)
-		{
-			if (gRectContext == NULL)
-			{
-				if (WParam == HOT_RECORD_WINDOW)
-				{
-					gRecordingStarted = TRUE;
-					CaptureWindow();
-					gRecordingStarted = FALSE;
-				}
-				else if (WParam == HOT_RECORD_MONITOR)
-				{
-					gRecordingStarted = TRUE;
-					CaptureMonitor();
-					gRecordingStarted = FALSE;
-				}
-				else if (WParam == HOT_RECORD_REGION)
-				{
-					gRecordingStarted = TRUE;
-					CaptureRegionInit();
-					gRecordingStarted = FALSE;
-				}
-			}
-		}
-		return 0;
-	}
-	else if (Message == WM_WCAP_TRAY_TITLE)
-	{
-		if (gRecording)
-		{
-			UINT64 FileSize;
-			DWORD Bitrate, LengthMsec;
-			Encoder_GetStats(&gEncoder, &Bitrate, &LengthMsec, &FileSize);
-
-			WCHAR LengthText[128];
-			StrFromTimeIntervalW(LengthText, _countof(LengthText), LengthMsec, 6);
-
-			WCHAR SizeText[128];
-			StrFormatByteSizeW(FileSize, SizeText, _countof(SizeText));
-
-			WCHAR Text[1024];
-			StrFormat(Text, L"Recording: %dx%d @ %.2f\nLength: %ls\nBitrate: %u kbit/s\nSize: %ls\nFramedrop: %u",
-				gEncoder.OutputWidth, gEncoder.OutputHeight,
-				(float)gEncoder.FramerateNum / (float)gEncoder.FramerateDen,
-				LengthText,
-				Bitrate,
-				SizeText,
-				gRecordingDroppedFrames);
-
-			UpdateTrayTitle(Text);
-		}
-		return 0;
-	}
-	else if (Message == WM_WCAP_STOP_CAPTURE)
-	{
-		if (gRecording)
-		{
-			StopRecording();
-		}
-		return 0;
-	}
-	else if (Message == WM_WCAP_ALREADY_RUNNING)
-	{
-		ShowNotification(L"wcap is already running!", NULL, NIIF_INFO);
-		return 0;
-	}
-	else if (Message == WM_TASKBARCREATED)
-	{
-		// in case taskbar was re-created (explorer.exe crashed) add our icon back
-		AddTrayIcon(Window);
-		return 0;
-	}
-	else if (Message == WM_ERASEBKGND)
-	{
-		return 1;
-	}
-	else if (Message == WM_PAINT)
-	{
-		PAINTSTRUCT Paint;
-		HDC PaintContext = BeginPaint(Window, &Paint);
-
-		HDC Context;
-		HPAINTBUFFER BufferedPaint = BeginBufferedPaint(PaintContext, &Paint.rcPaint, BPBF_COMPATIBLEBITMAP, NULL, &Context);
-		if (BufferedPaint)
-		{
-			if (gRectContext)
-			{
-				{
-					int X = Paint.rcPaint.left;
-					int Y = Paint.rcPaint.top;
-					int W = Paint.rcPaint.right - Paint.rcPaint.left;
-					int H = Paint.rcPaint.bottom - Paint.rcPaint.top;
-
-					// draw darkened screenshot
-					BitBlt(Context, X, Y, W, H, gRectDarkContext, X, Y, SRCCOPY);
-				}
-
-				if (gRectSelected)
-				{
-					// draw selected rectangle
-					int X0 = min(gRectSelection[0].x, gRectSelection[1].x);
-					int Y0 = min(gRectSelection[0].y, gRectSelection[1].y);
-					int X1 = max(gRectSelection[0].x, gRectSelection[1].x);
-					int Y1 = max(gRectSelection[0].y, gRectSelection[1].y);
-					BitBlt(Context, X0, Y0, X1 - X0, Y1 - Y0, gRectContext, X0, Y0, SRCCOPY);
-
-					RECT Rect = { X0 - 1, Y0 - 1, X1 + 1, Y1 + 1 };
-					FrameRect(Context, &Rect, GetStockObject(WHITE_BRUSH));
-
-					WCHAR Text[128];
-					int TextLength = StrFormat(Text, L"%d x %d", X1 - X0, Y1 - Y0);
-
-					SelectObject(Context, gFontBold);
-					SetTextAlign(Context, TA_TOP | TA_RIGHT);
-					SetTextColor(Context, RGB(255, 255, 255));
-					SetBkMode(Context, TRANSPARENT);
-					ExtTextOutW(Context, X1, Y1, 0, NULL, Text, TextLength, NULL);
-
-					SelectObject(Context, gFontBold);
-					SetTextAlign(Context, TA_BOTTOM | TA_LEFT);
-					SetTextColor(Context, RGB(255, 255, 255));
-
-					const WCHAR TextResize[] = L"Resize:  ";
-
-					SIZE Size;
-					GetTextExtentPoint32W(Context, TextResize, _countof(TextResize) - 1, &Size);
-					ExtTextOutW(Context, X0, Y0, 0, NULL, TextResize, _countof(TextResize) - 1, NULL);
-
-					int X = X0;
-					SelectObject(Context, gFont);
-
-					POINT CursorPos;
-					GetCursorPos(&CursorPos);
-					ScreenToClient(Window, &CursorPos);
-
-					gRectSetSize[0] = gRectSetSize[1] = 0;
-
-					int Sizes[][2] = { { 800, 600 }, { 1280, 720 }, { 1920, 1080 }, { 2560, 1440 } };
-					for (int i=0; i<_countof(Sizes); i++)
-					{
-						X += Size.cx;
-
-						TextLength = StrFormat(Text, L"%dx%d  ", Sizes[i][0], Sizes[i][1]);
-						GetTextExtentPoint32W(Context, Text, TextLength, &Size);
-
-						RECT Rect = { X, Y0 - Size.cy, X + Size.cx, Y0 };
-						BOOL Hovering = PtInRect(&Rect, CursorPos);
-						SetTextColor(Context, Hovering ? RGB(255, 255, 255) : RGB(192, 192, 192));
-						ExtTextOutW(Context, X, Y0, 0, NULL, Text, TextLength, NULL);
-
-						if (Hovering)
-						{
-							gRectSetSize[0] = Sizes[i][0];
-							gRectSetSize[1] = Sizes[i][1];
-							SetCursor(gCursorClick);
-						}
-					}
-				}
-				else
-				{
-					// draw initial message when no rectangle is selected
-					SelectObject(Context, gFont);
-					SelectObject(Context, GetStockObject(DC_PEN));
-					SelectObject(Context, GetStockObject(DC_BRUSH));
-
-					const WCHAR Line1[] = L"Select region with the mouse and press ENTER to start capture.";
-					const WCHAR Line2[] = L"Press ESC to cancel.";
-
-					const WCHAR* Lines[] = { Line1, Line2 };
-					const int LineLengths[] = { _countof(Line1) - 1, _countof(Line2) - 1 };
-					int Widths[_countof(Lines)];
-					int Height;
-
-					int TotalWidth = 0;
-					int TotalHeight = 0;
-					for (int i = 0; i < _countof(Lines); i++)
-					{
-						SIZE Size;
-						GetTextExtentPoint32W(Context, Lines[i], LineLengths[i], &Size);
-						Widths[i] = Size.cx;
-						Height = Size.cy;
-						TotalWidth = max(TotalWidth, Size.cx);
-						TotalHeight += Size.cy;
-					}
-					TotalWidth += 2 * Height;
-					TotalHeight += Height;
-
-					int MsgX = (gRectWidth - TotalWidth) / 2;
-					int MsgY = (gRectHeight - TotalHeight) / 2;
-
-					SetDCPenColor(Context, RGB(255, 255, 255));
-					SetDCBrushColor(Context, RGB(0, 0, 128));
-					Rectangle(Context, MsgX, MsgY, MsgX + TotalWidth, MsgY + TotalHeight);
-
-					SetTextAlign(Context, TA_TOP | TA_CENTER);
-					SetTextColor(Context, RGB(255, 255, 0));
-					SetBkMode(Context, TRANSPARENT);
-					int Y = MsgY + Height / 2;
-					int X = gRectWidth / 2;
-					for (int i = 0; i < _countof(Lines); i++)
-					{
-						ExtTextOutW(Context, X, Y, 0, NULL, Lines[i], LineLengths[i], NULL);
-						Y += Height;
-					}
-				}
-			}
-			else
-			{
-				RECT Rect;
-				GetClientRect(Window, &Rect);
-
-				HBRUSH BorderBrush = CreateSolidBrush(RGB(255, 255, 0));
-				Assert(BorderBrush);
-				FillRect(Context, &Rect, BorderBrush);
-				DeleteObject(BorderBrush);
-
-				Rect.left += WCAP_RECT_BORDER;
-				Rect.top += WCAP_RECT_BORDER;
-				Rect.right -= WCAP_RECT_BORDER;
-				Rect.bottom -= WCAP_RECT_BORDER;
-
-				HBRUSH ColorKeyBrush = CreateSolidBrush(RGB(255, 0, 255));
-				Assert(ColorKeyBrush);
-				FillRect(Context, &Rect, ColorKeyBrush);
-				DeleteObject(ColorKeyBrush);
-
-				FrameRect(Context, &Rect, GetStockObject(BLACK_BRUSH));
-			}
-
-			EndBufferedPaint(BufferedPaint, TRUE);
-		}
-
-		EndPaint(Window, &Paint);
-		return 0;
+		Data->Time = Capture->StartQpc + MFllMulDiv(Position - Capture->StartPos, Capture->Freq, Capture->Format->nSamplesPerSec, 0);
 	}
 
-	return DefWindowProcW(Window, Message, WParam, LParam);
-}
-
-static bool OnCaptureFrame(ScreenCapture* Capture, ScreenCaptureFrame* Frame)
-{
-	if (Frame == NULL)
-	{
-		PostMessageW(gWindow, WM_WCAP_STOP_CAPTURE, 0, 0);
-		return true;
-	}
-
-	BOOL DoEncode = TRUE;
-	DWORD LimitFramerate = gRecordingLimitFramerate;
-	if (LimitFramerate != 0)
-	{
-		if (Frame->Time * LimitFramerate < gRecordingNextEncode)
-		{
-			DoEncode = FALSE;
-		}
-		else
-		{
-			if (gRecordingNextEncode == 0)
-			{
-				gRecordingNextEncode = Frame->Time * LimitFramerate;
-			}
-			gRecordingNextEncode += gTickFreq.QuadPart;
-		}
-	}
-
-	// ignore frames if it comes from the past
-	if (Frame->Time <= gRecordingLastFrame)
-	{
-		DoEncode = FALSE;
-	}
-	gRecordingLastFrame = Frame->Time;
-
-	if (DoEncode)
-	{
-		if (!Encoder_NewFrame(&gEncoder, Frame->Texture, Frame->Rect, Frame->Time, gTickFreq.QuadPart))
-		{
-			// TODO: maybe highlight tray icon when droppped frames are increasing too much?
-			gRecordingDroppedFrames++;
-		}
-	}
-
-	if (gConfig.EnableLimitLength || gConfig.EnableLimitSize)
-	{
-		BOOL Stop = FALSE;
-
-		if (gConfig.EnableLimitLength)
-		{
-			if (Frame->Time - gEncoder.StartTime >= (UINT64)(gConfig.LimitLength * gTickFreq.QuadPart))
-			{
-				Stop = TRUE;
-			}
-		}
-		if (gConfig.EnableLimitSize && !Stop)
-		{
-			UINT64 FileSize;
-			DWORD Bitrate, LengthMsec;
-			Encoder_GetStats(&gEncoder, &Bitrate, &LengthMsec, &FileSize);
-
-			// reserve 0.5% for mp4 format overhead (probably an overestimate)
-			if (1000 * FileSize >= (995ULL * gConfig.LimitSize) << 20)
-			{
-				Stop = TRUE;
-			}
-		}
-
-		if (Stop)
-		{
-			PostMessageW(gWindow, WM_WCAP_STOP_CAPTURE, 0, 0);
-			return true;
-		}
-	}
-
-	// update tray title with stats once every second
-	if (gRecordingNextTooltip == 0)
-	{
-		gRecordingNextTooltip = Frame->Time + gTickFreq.QuadPart;
-	}
-	else if (Frame->Time >= gRecordingNextTooltip)
-	{
-		gRecordingNextTooltip += gTickFreq.QuadPart;
-
-		// do the update, but not from frame callback to minimize time when texture is used
-		PostMessageW(gWindow, WM_WCAP_TRAY_TITLE, 0, 0);
-	}
+	Data->Samples = BufferPtr;
+	Data->Count = Frames;
 
 	return true;
 }
 
-#ifndef NDEBUG
-int WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR cmdline, int cmdshow)
-#else
-void WinMainCRTStartup()
-#endif
+void AudioCapture_ReleaseData(AudioCapture* Capture, AudioCaptureData* Data)
 {
-	WNDCLASSEXW WindowClass =
-	{
-		.cbSize = sizeof(WindowClass),
-		.lpfnWndProc = WindowProc,
-		.hInstance = GetModuleHandleW(NULL),
-		.lpszClassName = L"wcap_window_class",
-	};
-
-	HWND Existing = FindWindowW(WindowClass.lpszClassName, NULL);
-	if (Existing)
-	{
-		PostMessageW(Existing, WM_WCAP_ALREADY_RUNNING, 0, 0);
-		ExitProcess(0);
-	}
-
-	if (!ScreenCapture_IsSupported())
-	{
-		MessageBoxW(NULL, L"Windows 10 Version 1903, May 2019 Update (19H1) or newer is required!", WCAP_TITLE, MB_ICONEXCLAMATION);
-		ExitProcess(0);
-	}
-
-	GetModuleFileNameW(NULL, gConfigPath, _countof(gConfigPath));
-	PathRenameExtensionW(gConfigPath, L".ini");
-
-	HR(CoInitializeEx(0, COINIT_APARTMENTTHREADED));
-
-	Config_Defaults(&gConfig);
-	Config_Load(&gConfig, gConfigPath);
-	ScreenCapture_Create(&gCapture, &OnCaptureFrame, false);
-	Encoder_Init(&gEncoder);
-
-	QueryPerformanceFrequency(&gTickFreq);
-
-	gCursorArrow = LoadCursor(NULL, IDC_ARROW);
-	gCursorClick = LoadCursor(NULL, IDC_HAND);
-	gCursorResize[WCAP_RESIZE_NONE] = LoadCursor(NULL, IDC_CROSS);
-	gCursorResize[WCAP_RESIZE_M]    = LoadCursor(NULL, IDC_SIZEALL);
-	gCursorResize[WCAP_RESIZE_T]    = gCursorResize[WCAP_RESIZE_B]  = LoadCursor(NULL, IDC_SIZENS);
-	gCursorResize[WCAP_RESIZE_L]    = gCursorResize[WCAP_RESIZE_R]  = LoadCursor(NULL, IDC_SIZEWE);
-	gCursorResize[WCAP_RESIZE_TL]   = gCursorResize[WCAP_RESIZE_BR] = LoadCursor(NULL, IDC_SIZENWSE);
-	gCursorResize[WCAP_RESIZE_TR]   = gCursorResize[WCAP_RESIZE_BL] = LoadCursor(NULL, IDC_SIZENESW);
-
-	gFont = CreateFontW(-WCAP_UI_FONT_SIZE, 0, 0, 0, FW_NORMAL,
-		FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-		CLEARTYPE_QUALITY, DEFAULT_PITCH, WCAP_UI_FONT);
-	Assert(gFont);
-
-	gFontBold = CreateFontW(-WCAP_UI_FONT_SIZE, 0, 0, 0, FW_BOLD,
-		FALSE, FALSE, FALSE,DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-		CLEARTYPE_QUALITY, DEFAULT_PITCH, WCAP_UI_FONT);
-	Assert(gFontBold);
-
-	gIcon1 = LoadIconW(WindowClass.hInstance, MAKEINTRESOURCEW(1));
-	gIcon2 = LoadIconW(WindowClass.hInstance, MAKEINTRESOURCEW(2));
-	Assert(gIcon1 && gIcon2);
-
-	WM_TASKBARCREATED = RegisterWindowMessageW(L"TaskbarCreated");
-	Assert(WM_TASKBARCREATED);
-
-	ATOM Atom = RegisterClassExW(&WindowClass);
-	Assert(Atom);
-
-	gWindow = CreateWindowExW(
-		0, WindowClass.lpszClassName, WCAP_TITLE, WS_POPUP,
-		CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-		NULL, NULL, WindowClass.hInstance, NULL);
-	if (!gWindow)
-	{
-		ExitProcess(0);
-	}
-	if (!EnableHotKeys())
-	{
-		MessageBoxW(NULL,
-			L"Cannot register wcap keyboard shortcuts.\nSome other application might already use shorcuts.\nPlease check & adjust the settings!",
-			WCAP_TITLE, MB_ICONEXCLAMATION);
-	}
-
-	for (;;)
-	{
-		MSG Message;
-		BOOL Result = GetMessageW(&Message, NULL, 0, 0);
-		if (Result == 0)
-		{
-			ExitProcess(0);
-		}
-		Assert(Result > 0);
-
-		TranslateMessage(&Message);
-		DispatchMessageW(&Message);
-	}
+	uint32_t ReadSize = (uint32_t)(sizeof(uint32_t) + sizeof(uint64_t) + sizeof(uint64_t) + Data->Count * Capture->Format->nBlockAlign);
+	Assert(ReadSize <= atomic_load_explicit(&Capture->BufferWrite, memory_order_relaxed) - atomic_load_explicit(&Capture->BufferRead, memory_order_relaxed));
+	atomic_fetch_add_explicit(&Capture->BufferRead, ReadSize, memory_order_release);
 }
