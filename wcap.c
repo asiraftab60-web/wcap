@@ -119,6 +119,7 @@ static BOOL gRectSetSizeClick;
 static HWND gWindow;
 static Config gConfig;
 static AudioCapture gAudio;
+static AudioCapture gMic;
 static ScreenCapture gCapture;
 static Encoder gEncoder;
 
@@ -255,6 +256,20 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 		EncConfig.AudioFormat = gAudio.Format;
 	}
 
+	if (gConfig.CaptureMicrophone)
+	{
+		if (!AudioCapture_Start(&gMic, (HWND)-1))
+		{
+			// Non-fatal: warn but continue without mic
+			ShowNotification(L"Cannot capture microphone. Recording without mic.", L"Warning", NIIF_WARNING);
+		}
+		else if (!gConfig.CaptureAudio)
+		{
+			// Mic is the only audio source — use its format for the encoder
+			EncConfig.AudioFormat = gMic.Format;
+		}
+	}
+
 	if (!Encoder_Start(&gEncoder, Device, gRecordingPath, &EncConfig))
 	{
 		if (gConfig.CaptureAudio)
@@ -276,6 +291,10 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	{
 		SetTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER, WCAP_AUDIO_CAPTURE_INTERVAL, NULL);
 	}
+	else if (gConfig.CaptureMicrophone)
+	{
+		SetTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER, WCAP_AUDIO_CAPTURE_INTERVAL, NULL);
+	}
 	SetTimer(gWindow, WCAP_VIDEO_UPDATE_TIMER, WCAP_VIDEO_UPDATE_INTERVAL, NULL);
 
 	UpdateTrayIcon(gIcon2);
@@ -290,6 +309,40 @@ static void EncodeCapturedAudio(void)
 	if (gEncoder.StartTime == 0)
 	{
 		// we don't know when first video frame starts yet
+		return;
+	}
+
+	// drain mic buffer when not capturing system audio (mic-only)
+	if (!gConfig.CaptureAudio && gConfig.CaptureMicrophone && gMic.CaptureClient)
+	{
+		AudioCaptureData MicData;
+		while (AudioCapture_GetData(&gMic, &MicData, gEncoder.StartTime))
+		{
+			UINT32 FramesToEncode = (UINT32)MicData.Count;
+			if (MicData.Time < gEncoder.StartTime)
+			{
+				const UINT32 SampleRate = gMic.Format->nSamplesPerSec;
+				UINT64 TimeToSkip = gEncoder.StartTime - MicData.Time;
+				UINT32 FramesToSkip = (UINT32)((TimeToSkip * SampleRate - 1) / MF_UNITS_PER_SECOND + 1);
+				if (FramesToSkip < FramesToEncode)
+				{
+					MicData.Time += FramesToSkip * MF_UNITS_PER_SECOND / SampleRate;
+					FramesToEncode -= FramesToSkip;
+					if (MicData.Samples)
+						MicData.Samples = (BYTE*)MicData.Samples + FramesToSkip * gMic.Format->nBlockAlign;
+				}
+				else
+				{
+					FramesToEncode = 0;
+				}
+			}
+			if (FramesToEncode != 0)
+			{
+				Assert(MicData.Time >= gEncoder.StartTime);
+				Encoder_NewSamples(&gEncoder, MicData.Samples, FramesToEncode, MicData.Time, gTickFreq.QuadPart);
+			}
+			AudioCapture_ReleaseData(&gMic, &MicData);
+		}
 		return;
 	}
 
@@ -324,6 +377,40 @@ static void EncodeCapturedAudio(void)
 		if (FramesToEncode != 0)
 		{
 			Assert(Data.Time >= gEncoder.StartTime);
+
+			// Mix in microphone audio if available and formats match (both float32)
+			if (gConfig.CaptureMicrophone && gMic.CaptureClient && Data.Samples &&
+				gMic.Format->wBitsPerSample == 32 && gAudio.Format->wBitsPerSample == 32)
+			{
+				UINT32 SysChannels = gAudio.Format->nChannels;
+				UINT32 MicChannels = gMic.Format->nChannels;
+				UINT32 SampleCount = FramesToEncode * SysChannels;
+				float* Dst = (float*)Data.Samples;
+
+				// We collect mic samples into a temp scratch area and add
+				AudioCaptureData MicData;
+				if (AudioCapture_GetData(&gMic, &MicData, gEncoder.StartTime))
+				{
+					UINT32 MicFrames = (UINT32)MicData.Count;
+					if (MicFrames > FramesToEncode) MicFrames = FramesToEncode;
+
+					if (MicData.Samples)
+					{
+						float* Src = (float*)MicData.Samples;
+						for (UINT32 f = 0; f < MicFrames; f++)
+						{
+							for (UINT32 c = 0; c < SysChannels; c++)
+							{
+								// map mic channel (mono mic -> both channels, stereo mic -> direct)
+								UINT32 MicCh = (MicChannels == 1) ? 0 : (c < MicChannels ? c : MicChannels - 1);
+								Dst[f * SysChannels + c] += Src[f * MicChannels + MicCh];
+							}
+						}
+					}
+					AudioCapture_ReleaseData(&gMic, &MicData);
+				}
+			}
+
 			Encoder_NewSamples(&gEncoder, Data.Samples, FramesToEncode, Data.Time, gTickFreq.QuadPart);
 		}
 		AudioCapture_ReleaseData(&gAudio, &Data);
@@ -341,6 +428,17 @@ static void StopRecording(void)
 		AudioCapture_Flush(&gAudio);
 		EncodeCapturedAudio();
 		AudioCapture_Stop(&gAudio);
+	}
+	else if (gConfig.CaptureMicrophone && gMic.CaptureClient)
+	{
+		KillTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER);
+		AudioCapture_Flush(&gMic);
+		EncodeCapturedAudio();
+	}
+	if (gConfig.CaptureMicrophone && gMic.CaptureClient)
+	{
+		AudioCapture_Stop(&gMic);
+		gMic.CaptureClient = NULL;
 	}
 	KillTimer(gWindow, WCAP_VIDEO_UPDATE_TIMER);
 
