@@ -1137,3 +1137,5 @@ BOOL Config_ShowDialog(Config* C)
 
 	return (BOOL)DialogBoxIndirectParamW(GetModuleHandleW(NULL), (LPCDLGTEMPLATEW)Data, NULL, Config__DialogProc, (LPARAM)C);
 }
+BOOL  CaptureMicrophone;
+float MicrophoneGain;
