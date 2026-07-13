@@ -1,6 +1,7 @@
 #include "wcap.h"
 #include "wcap_config.h"
 #include "wcap_audio_capture.h"
+#include "wcap_audio_mixer.h"
 #include "wcap_screen_capture.h"
 #include "wcap_encoder.h"
 
@@ -118,7 +119,7 @@ static BOOL gRectSetSizeClick;
 // globals
 static HWND gWindow;
 static Config gConfig;
-static AudioCapture gAudio;
+static AudioMixer gAudio;
 static ScreenCapture gCapture;
 static Encoder gEncoder;
 
@@ -245,7 +246,7 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	if (gConfig.CaptureAudio)
 	{
 		HWND ApplicationWindow = gConfig.ApplicationLocalAudio && AudioCapture_CanCaptureApplicationLocal() ? Window : NULL;
-		if (!AudioCapture_Start(&gAudio, ApplicationWindow))
+		if (!AudioMixer_Start(&gAudio, ApplicationWindow, gConfig.CaptureMicrophone, gConfig.MicrophoneGainPercent / 100.0f))
 		{
 			ShowNotification(L"Cannot capture audio!", L"Cannot Start Recording", NIIF_WARNING);
 			ScreenCapture_Stop(&gCapture);
@@ -259,7 +260,7 @@ static void StartRecording(ID3D11Device* Device, HWND Window)
 	{
 		if (gConfig.CaptureAudio)
 		{
-			AudioCapture_Stop(&gAudio);
+			AudioMixer_Stop(&gAudio);
 		}
 		ScreenCapture_Stop(&gCapture);
 		ID3D11Device_Release(Device);
@@ -294,7 +295,7 @@ static void EncodeCapturedAudio(void)
 	}
 
 	AudioCaptureData Data;
-	while (AudioCapture_GetData(&gAudio, &Data, gEncoder.StartTime))
+	while (AudioMixer_GetData(&gAudio, &Data, gEncoder.StartTime))
 	{
 		UINT32 FramesToEncode = (UINT32)Data.Count;
 		if (Data.Time < gEncoder.StartTime)
@@ -326,7 +327,7 @@ static void EncodeCapturedAudio(void)
 			Assert(Data.Time >= gEncoder.StartTime);
 			Encoder_NewSamples(&gEncoder, Data.Samples, FramesToEncode, Data.Time, gTickFreq.QuadPart);
 		}
-		AudioCapture_ReleaseData(&gAudio, &Data);
+		AudioMixer_ReleaseData(&gAudio, &Data);
 	}
 }
 
@@ -338,9 +339,9 @@ static void StopRecording(void)
 	if (gConfig.CaptureAudio)
 	{
 		KillTimer(gWindow, WCAP_AUDIO_CAPTURE_TIMER);
-		AudioCapture_Flush(&gAudio);
+		AudioMixer_Flush(&gAudio);
 		EncodeCapturedAudio();
-		AudioCapture_Stop(&gAudio);
+		AudioMixer_Stop(&gAudio);
 	}
 	KillTimer(gWindow, WCAP_VIDEO_UPDATE_TIMER);
 
