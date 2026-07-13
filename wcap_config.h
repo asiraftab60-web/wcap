@@ -48,6 +48,8 @@ typedef struct
 	// audio
 	BOOL CaptureAudio;
 	BOOL ApplicationLocalAudio;
+	BOOL CaptureMicrophone;
+	DWORD MicrophoneGainPercent; // 100 = unity gain
 	DWORD AudioCodec;
 	DWORD AudioChannels;
 	DWORD AudioSamplerate;
@@ -875,6 +877,8 @@ void Config_Defaults(Config* C)
 		// audio
 		.CaptureAudio = TRUE,
 		.ApplicationLocalAudio = TRUE,
+		.CaptureMicrophone = TRUE,
+		.MicrophoneGainPercent = 100,
 		.AudioCodec = CONFIG_AUDIO_AAC,
 		.AudioChannels = 2,
 		.AudioSamplerate = 48000,
@@ -986,6 +990,8 @@ void Config_Load(Config* C, LPCWSTR FileName)
 	// audio
 	Config__GetBool(FileName, L"CaptureAudio",          &C->CaptureAudio);
 	Config__GetBool(FileName, L"ApplicationLocalAudio", &C->ApplicationLocalAudio);
+	Config__GetBool(FileName, L"CaptureMicrophone",     &C->CaptureMicrophone);
+	Config__GetInt(FileName,  L"MicrophoneGainPercent", &C->MicrophoneGainPercent, NULL);
 	Config__GetStr(FileName, L"AudioCodec",             &C->AudioCodec,      gAudioCodecs);
 	Config__GetInt(FileName, L"AudioChannels",          &C->AudioChannels,   (DWORD[]) { 1, 2, 0 });
 	Config__GetInt(FileName, L"AudioSamplerate",        &C->AudioSamplerate, gAudioSamplerates);
@@ -1035,6 +1041,8 @@ void Config_Save(Config* C, LPCWSTR FileName)
 	// audio
 	WritePrivateProfileStringW(INI_SECTION, L"CaptureAudio",          C->CaptureAudio          ? L"1" : L"0", FileName);
 	WritePrivateProfileStringW(INI_SECTION, L"ApplicationLocalAudio", C->ApplicationLocalAudio ? L"1" : L"0", FileName);
+	WritePrivateProfileStringW(INI_SECTION, L"CaptureMicrophone",     C->CaptureMicrophone     ? L"1" : L"0", FileName);
+	Config__WriteInt(FileName, L"MicrophoneGainPercent", C->MicrophoneGainPercent);
 	WritePrivateProfileStringW(INI_SECTION, L"AudioCodec", gAudioCodecs[C->AudioCodec], FileName);
 	Config__WriteInt(FileName, L"AudioChannels",   C->AudioChannels);
 	Config__WriteInt(FileName, L"AudioSamplerate", C->AudioSamplerate);
